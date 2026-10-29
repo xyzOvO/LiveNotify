@@ -88,6 +88,8 @@ object BiliStatsApi {
             liveCount = ch.optLong("totalLiveCount", 0L),
             liveSeconds = ch.optLong("totalLiveSecond", 0L),
             lastLiveAt = ch.optLong("lastLiveDate", 0L),
+            // 服务端最近一次刷新统计的时间：粉丝、总收入这些数字都截至这个时刻
+            lastStatAt = ch.optLong("lastUpdateStatAt", 0L),
             fansHistory = fans.sortedBy { it.at }
         )
     }
@@ -383,6 +385,8 @@ data class ChannelStats(
     val liveCount: Long,
     val liveSeconds: Long,
     val lastLiveAt: Long,
+    /** 统计快照的更新时间（毫秒）；0 表示服务端没给 */
+    val lastStatAt: Long,
     val fansHistory: List<FansPoint>
 )
 

@@ -97,7 +97,10 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
         data class Done(
             val userId: Long,
             val rangeDays: Int,
-            val data: UserAnalysis
+            val data: UserAnalysis,
+            /** 实际提交给服务端的时间窗口，界面要把它显示出来，否则数字没有口径 */
+            val fromMs: Long,
+            val toMs: Long
         ) : AnalysisUi
 
         data class Failed(val message: String, val rangeDays: Int) : AnalysisUi
@@ -111,6 +114,7 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
     /** 只保留这一次的结果缓存，避免重复点「开始分析」时反复请求服务端 */
     private var cachedKey: String? = null
     private var cachedData: UserAnalysis? = null
+    private var cachedRange: Pair<Long, Long>? = null
 
     /**
      * 分析某用户近 [days] 天的互动记录。
@@ -120,7 +124,8 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
         if (userId <= 0L) return
         val key = "$userId:$days"
         if (cachedKey == key && cachedData != null) {
-            _analysis.value = AnalysisUi.Done(userId, days, cachedData!!)
+            val (cf, ct) = cachedRange ?: rangeOf(days)
+            _analysis.value = AnalysisUi.Done(userId, days, cachedData!!, cf, ct)
             return
         }
         analysisJob?.cancel()
@@ -133,7 +138,8 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 cachedKey = key
                 cachedData = data
-                _analysis.value = AnalysisUi.Done(userId, days, data)
+                cachedRange = from to to
+                _analysis.value = AnalysisUi.Done(userId, days, data, from, to)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
@@ -151,6 +157,7 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
         analysisJob?.cancel()
         cachedKey = null
         cachedData = null
+        cachedRange = null
         _analysis.value = AnalysisUi.Idle
     }
 

@@ -234,7 +234,7 @@ fun MainScreen(
                             )
                             Spacer(Modifier.weight(1f))
                             Text(
-                                "长按可管理",
+                                "点击或长按管理",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
                             )
@@ -244,7 +244,9 @@ fun MainScreen(
                         StreamerCard(
                             s = s,
                             now = now,
-                            onClick = { vm.openRoom(s) },
+                            // 卡片本身不再直接跳直播间：手指一滑就弹浏览器，回来还得重新找。
+                            // 点击与长按都只开操作面板，真正跳转只留面板里的「打开直播间」。
+                            onClick = { actionFor = s },
                             onLongClick = { actionFor = s }
                         )
                     }

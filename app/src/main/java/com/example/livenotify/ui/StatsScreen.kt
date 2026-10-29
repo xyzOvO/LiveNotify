@@ -61,6 +61,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.livenotify.bili.BiliStatsApi
@@ -212,7 +213,7 @@ private fun ChannelTab(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            item { ChannelHead(ui.channel) }
+            item { ChannelHead(ui.channel, ui.career?.firstLiveAt.orEmpty()) }
             item { FansCard(ui.channel.fansHistory, ui.channel.fansCount) }
             if (ui.trend.isNotEmpty()) {
                 item { TrendCard(ui.trend) }
@@ -231,8 +232,13 @@ private fun ChannelTab(
 }
 
 @Composable
-private fun ChannelHead(ch: ChannelStats) {
+private fun ChannelHead(ch: ChannelStats, firstLiveAt: String) {
     val cs = MaterialTheme.colorScheme
+    val dayFmt = remember { SimpleDateFormat("MM-dd", Locale.getDefault()) }
+    // 粉丝数是实时值，取最后一次采样点当作「截至」的时刻
+    val snapAt = remember(ch.fansHistory) {
+        ch.fansHistory.lastOrNull()?.at?.let { dayFmt.format(Date(it)) }
+    }
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (ch.faceUrl.isNotBlank()) {
@@ -291,9 +297,24 @@ private fun ChannelHead(ch: ChannelStats) {
         }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatCell("粉丝", fmtCount(ch.fansCount.toLong()), Modifier.weight(1f))
-            StatCell("场次", fmtCount(ch.liveCount), Modifier.weight(1f))
-            StatCell("总收入", fmtMoney(ch.totalIncome), Modifier.weight(1f))
+            StatCell(
+                "粉丝",
+                fmtCount(ch.fansCount.toLong()),
+                Modifier.weight(1f),
+                caption = snapAt?.let { "截至 $it" } ?: "当前值"
+            )
+            StatCell("场次", fmtCount(ch.liveCount), Modifier.weight(1f), caption = "生涯累计")
+            StatCell("总收入", fmtMoney(ch.totalIncome), Modifier.weight(1f), caption = "生涯累计")
+        }
+        // 数字不标口径等于没说：这里讲清楚「生涯」从哪天开始算
+        val firstLive = firstLiveAt.take(10)
+        if (firstLive.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "场次与总收入为生涯累计，自 $firstLive 首播起算",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline.copy(alpha = 0.85f)
+            )
         }
     }
 }
@@ -301,7 +322,8 @@ private fun ChannelHead(ch: ChannelStats) {
 @Composable
 private fun FansCard(points: List<FansPoint>, current: Int) {
     val cs = MaterialTheme.colorScheme
-    val fmt = remember { SimpleDateFormat("MM-dd", Locale.getDefault()) }
+    // 带年份：粉丝历史可能跨年，只给 MM-dd 会看不出是哪一年
+    val fmt = remember { SimpleDateFormat("yy-MM-dd", Locale.getDefault()) }
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("粉丝走势", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -309,12 +331,20 @@ private fun FansCard(points: List<FansPoint>, current: Int) {
             if (points.size >= 2) {
                 val delta = points.last().value - points.first().value
                 Text(
-                    (if (delta >= 0) "+" else "") + fmtCount(delta.toLong()),
+                    "区间 " + (if (delta >= 0) "+" else "") + fmtCount(delta.toLong()),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Medium,
                     color = if (delta >= 0) okColor() else cs.outline
                 )
             }
+        }
+        if (points.size >= 2) {
+            val spanDays = ((points.last().at - points.first().at) / 86_400_000L).coerceAtLeast(0L)
+            Text(
+                "社区采集区间：共 ${points.size} 个采样点、跨 $spanDays 天（非平台完整历史）",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline
+            )
         }
         Spacer(Modifier.height(10.dp))
         if (points.size < 2) {
@@ -378,6 +408,13 @@ private fun TrendCard(months: List<TrendMonth>) {
             style = MaterialTheme.typography.labelSmall,
             color = cs.outline
         )
+        if (recent.size >= 2) {
+            Text(
+                "统计最近 ${recent.size} 个月：${recent.first().month} ~ ${recent.last().month}",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline.copy(alpha = 0.8f)
+            )
+        }
         Spacer(Modifier.height(12.dp))
         BarsChart(
             values = recent.map { it.viewers.toFloat() },
@@ -434,8 +471,20 @@ private fun TrendCard(months: List<TrendMonth>) {
 @Composable
 private fun CareerCard(c: CareerStats) {
     val cs = MaterialTheme.colorScheme
+    val first = c.firstLiveAt.take(10)
+    val last = c.lastLiveAt.take(10)
     SectionCard {
         Text("生涯统计", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        // 这一行就是口径：下面是整段直播生涯的累计，不是某段时间
+        Text(
+            buildString {
+                if (first.isNotBlank()) append("$first 首播起的累计值")
+                else append("生涯累计值")
+                if (last.isNotBlank()) append(" · 最近一场 $last")
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.outline
+        )
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatCell("开播场次", fmtCount(c.liveCount.toLong()), Modifier.weight(1f))
@@ -445,17 +494,6 @@ private fun CareerCard(c: CareerStats) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatCell("总时长", fmtDuration(c.liveSeconds), Modifier.weight(1f))
             StatCell("弹幕总量", fmtCount(c.danmaku), Modifier.weight(1f))
-        }
-        if (c.firstLiveAt.isNotBlank() || c.lastLiveAt.isNotBlank()) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                listOfNotNull(
-                    c.firstLiveAt.take(10).takeIf { it.isNotBlank() }?.let { "首播 $it" },
-                    c.lastLiveAt.take(10).takeIf { it.isNotBlank() }?.let { "最近 $it" }
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = cs.outline
-            )
         }
     }
 }
@@ -585,7 +623,7 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
                         )
                     }
                 }
-                item { SummaryCard(d) }
+                item { SummaryCard(d, done.fromMs, done.toMs) }
                 if (d.days.isNotEmpty()) item { DailyCard(d.days) }
                 if (d.eventTypes.isNotEmpty()) item { EventTypeCard(d) }
                 if (d.affinities.isNotEmpty()) item { AffinityCard(d) }
@@ -598,11 +636,19 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
 }
 
 @Composable
-private fun SummaryCard(d: UserAnalysis) {
+private fun SummaryCard(d: UserAnalysis, fromMs: Long, toMs: Long) {
     val cs = MaterialTheme.colorScheme
     val s = d.summary
+    val fmt = remember { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
     SectionCard {
         Text("互动概要", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        if (fromMs > 0L && toMs > 0L) {
+            Text(
+                "统计区间 ${fmt.format(Date(fromMs))} ~ ${fmt.format(Date(toMs))}",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline
+            )
+        }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatCell("发言", fmtCount(s.messages.toLong()), Modifier.weight(1f))
@@ -641,7 +687,8 @@ private fun DailyCard(days: List<DayStat>) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("活跃走势", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
-            Text("近 ${recent.size} 天", style = MaterialTheme.typography.labelSmall, color = cs.outline)
+            // takeLast(30) 取的是最近 30 个「有记录的日子」，不是自然日，别写成「近 30 天」
+            Text("最近 ${recent.size} 个活跃日", style = MaterialTheme.typography.labelSmall, color = cs.outline)
         }
         Spacer(Modifier.height(10.dp))
         BarsChart(
@@ -977,7 +1024,13 @@ private fun SectionCard(content: @Composable androidx.compose.foundation.layout.
 }
 
 @Composable
-private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
+private fun StatCell(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    /** 统计口径（截至哪天 / 是否生涯累计），没有就不占位 */
+    caption: String? = null
+) {
     val cs = MaterialTheme.colorScheme
     Column(
         modifier = modifier
@@ -987,6 +1040,16 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
     ) {
         Text(value, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1)
         Text(label, style = MaterialTheme.typography.labelSmall, color = cs.outline, maxLines = 1)
+        if (caption != null) {
+            Text(
+                caption,
+                fontSize = 10.sp,
+                lineHeight = 13.sp,
+                color = cs.outline.copy(alpha = 0.8f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 
@@ -1062,7 +1125,8 @@ private fun fmtMoney(v: Double): String = when {
 private fun fmtDuration(seconds: Long): String {
     val h = seconds / 3600
     return when {
-        h >= 1000 -> String.format(Locale.US, "%.0f 千时", h / 1000.0)
+        // 原先 4721 小时会显示成「5 千时」：单位不明，还把精度抹掉了。万位以内直接给小时数。
+        h >= 10_000 -> String.format(Locale.US, "%.1f 万时", h / 10_000.0)
         h >= 1 -> "$h 时"
         else -> "${seconds / 60} 分"
     }
