@@ -34,7 +34,9 @@ data class Settings(
     /** 开播通知是否震动 */
     val notifyVibrate: Boolean = true,
     /** 隐藏后台检测的常驻通知（Android 要求前台服务必须有通知，只能降到最低可见度） */
-    val hideMonitorNotification: Boolean = false
+    val hideMonitorNotification: Boolean = false,
+    /** 启动时自动检查一次新版本（只提示，不会自动下载安装） */
+    val autoUpdateCheck: Boolean = true
 )
 
 class SettingsRepository(private val context: Context) {
@@ -54,6 +56,7 @@ class SettingsRepository(private val context: Context) {
         val NOTIFY_SOUND = booleanPreferencesKey("notify_sound")
         val NOTIFY_VIBRATE = booleanPreferencesKey("notify_vibrate")
         val HIDE_MONITOR_NOTIFICATION = booleanPreferencesKey("hide_monitor_notification")
+        val AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")
     }
 
     val settings: Flow<Settings> = context.settingsStore.data
@@ -73,7 +76,8 @@ class SettingsRepository(private val context: Context) {
                 monitorEnabled = p[Keys.MONITOR_ENABLED] ?: true,
                 notifySound = p[Keys.NOTIFY_SOUND] ?: true,
                 notifyVibrate = p[Keys.NOTIFY_VIBRATE] ?: true,
-                hideMonitorNotification = p[Keys.HIDE_MONITOR_NOTIFICATION] ?: false
+                hideMonitorNotification = p[Keys.HIDE_MONITOR_NOTIFICATION] ?: false,
+                autoUpdateCheck = p[Keys.AUTO_UPDATE_CHECK] ?: true
             )
         }
 
@@ -99,4 +103,5 @@ class SettingsRepository(private val context: Context) {
     suspend fun setNotifySound(v: Boolean) = edit { it[Keys.NOTIFY_SOUND] = v }
     suspend fun setNotifyVibrate(v: Boolean) = edit { it[Keys.NOTIFY_VIBRATE] = v }
     suspend fun setHideMonitorNotification(v: Boolean) = edit { it[Keys.HIDE_MONITOR_NOTIFICATION] = v }
+    suspend fun setAutoUpdateCheck(v: Boolean) = edit { it[Keys.AUTO_UPDATE_CHECK] = v }
 }

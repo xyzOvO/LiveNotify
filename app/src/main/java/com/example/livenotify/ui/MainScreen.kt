@@ -45,6 +45,7 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -113,6 +114,7 @@ fun MainScreen(
     val toast by vm.toast.collectAsStateWithLifecycle()
     val refreshing by vm.refreshing.collectAsStateWithLifecycle()
     val egg by vm.egg.collectAsStateWithLifecycle()
+    val updateState by vm.update.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
 
@@ -152,6 +154,9 @@ fun MainScreen(
             vm.consumeToast()
         }
     }
+
+    // 启动时静默检查一次新版本（设置里可关）；有更新才弹窗
+    LaunchedEffect(Unit) { vm.autoCheckUpdate() }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -250,6 +255,15 @@ fun MainScreen(
     // 关注问候：命中配置的主播时弹一句专属台词
     egg?.let { e ->
         EasterEggDialog(e = e, onDismiss = { vm.consumeEgg() })
+    }
+
+    // 有新版本：下载中显示进度，完成后自动跳安装页
+    (updateState as? MainViewModel.UpdateState.Available)?.let { st ->
+        UpdateDialog(
+            state = st,
+            onDownload = { vm.downloadUpdate(st.info) },
+            onDismiss = { vm.dismissUpdate() }
+        )
     }
 
     // 长按操作面板
@@ -891,6 +905,53 @@ private fun EasterEggDialog(e: EasterEggs.Egg, onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("收下") }
+        }
+    )
+}
+
+/** 新版本提示：先展示版本说明，点「立即更新」后原地变成下载进度 */
+@Composable
+private fun UpdateDialog(
+    state: MainViewModel.UpdateState.Available,
+    onDownload: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    AlertDialog(
+        // 下载中不允许关掉，避免协程被取消后留下半截文件
+        onDismissRequest = { if (!state.downloading) onDismiss() },
+        title = { Text("发现新版本 v${state.info.versionName}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (state.downloading) {
+                    LinearProgressIndicator(
+                        progress = { state.percent / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "正在下载 ${state.percent}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.outline
+                    )
+                } else {
+                    Text(
+                        state.info.notes.ifBlank { "问题修复与体验优化" }.take(300),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.onSurfaceVariant
+                    )
+                    Text(
+                        "下载完成后会拉起系统安装页，点「安装」即可覆盖升级，关注列表不会丢。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.outline
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (!state.downloading) TextButton(onClick = onDownload) { Text("立即更新") }
+        },
+        dismissButton = {
+            if (!state.downloading) TextButton(onClick = onDismiss) { Text("以后再说") }
         }
     )
 }

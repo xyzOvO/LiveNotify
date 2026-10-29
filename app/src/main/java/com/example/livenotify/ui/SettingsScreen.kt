@@ -22,6 +22,7 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -47,11 +48,15 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.livenotify.monitor.NotificationHelper
 import com.example.livenotify.platform.PlatformRegistry
+import com.example.livenotify.update.ApkInstaller
+import com.example.livenotify.update.ReleaseInfo
+import com.example.livenotify.update.UpdateApi
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val updateState by vm.update.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     Scaffold(
@@ -312,6 +317,50 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
             }
 
             item {
+                Section("检查更新") {
+                    val st = updateState
+                    Text(
+                        "当前版本 v${com.example.livenotify.BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            enabled = st !is MainViewModel.UpdateState.Checking &&
+                                (st as? MainViewModel.UpdateState.Available)?.downloading != true,
+                            onClick = { vm.checkUpdate() }
+                        ) { Text(if (st is MainViewModel.UpdateState.Checking) "检查中…" else "检查更新") }
+                        OutlinedButton(onClick = { openReleases(context) }) {
+                            Text("全部版本")
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    UpdateStatusBlock(vm, st)
+                    SwitchRow(
+                        label = "启动时自动检查",
+                        checked = settings.autoUpdateCheck,
+                        onCheckedChange = { vm.setAutoUpdateCheck(it) }
+                    )
+                    Text(
+                        "更新包来自本仓库的 GitHub Releases，下载后会拉起系统安装页，点「安装」即可覆盖升级，关注列表不会丢。若提示「安装被阻止」，先在下方授权允许安装未知应用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    if (!ApkInstaller.canInstall(context)) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "当前未授权「安装未知应用」，自动升级会失败。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        OutlinedButton(onClick = { ApkInstaller.openInstallPermission(context) }) {
+                            Text("去授权")
+                        }
+                    }
+                }
+            }
+
+            item {
                 Section("关于") {
                     Text(
                         "开播提醒 v${com.example.livenotify.BuildConfig.VERSION_NAME}（build ${com.example.livenotify.BuildConfig.VERSION_CODE}）",
@@ -331,9 +380,59 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
     }
 }
 
+/** 设置页里的更新状态：检查结果、更新说明、下载进度都就地展示，不弹窗 */
 @Composable
-private fun Section(title: String, content: @Composable () -> Unit) {
-    ElevatedCard(
+private fun UpdateStatusBlock(vm: MainViewModel, state: MainViewModel.UpdateState) {
+    val cs = MaterialTheme.colorScheme
+    when (state) {
+        is MainViewModel.UpdateState.Idle -> Unit
+        is MainViewModel.UpdateState.Checking -> {
+            Text("正在检查…", style = MaterialTheme.typography.bodySmall, color = cs.outline)
+        }
+        is MainViewModel.UpdateState.UpToDate -> {
+            Text("已是最新版本", style = MaterialTheme.typography.bodySmall, color = cs.primary)
+        }
+        is MainViewModel.UpdateState.Failed -> {
+            Text(state.message, style = MaterialTheme.typography.bodySmall, color = cs.error)
+        }
+        is MainViewModel.UpdateState.Available -> {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "发现新版本 v${state.info.versionName}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = cs.primary
+                )
+                if (state.downloading) {
+                    LinearProgressIndicator(
+                        progress = { state.percent / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "正在下载 ${state.percent}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.outline
+                    )
+                } else {
+                    val notes = state.info.notes
+                    if (notes.isNotBlank()) {
+                        Text(
+                            notes.take(200),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.outline
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { vm.downloadUpdate(state.info) }) { Text("下载并安装") }
+                        OutlinedButton(onClick = { vm.dismissUpdate() }) { Text("以后再说") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Section(title: String, content: @Composable () -> Unit) {    ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -393,6 +492,15 @@ private fun HourField(
         singleLine = true,
         modifier = modifier
     )
+}
+
+private fun openReleases(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(UpdateApi.RELEASES_PAGE))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
 }
 
 private fun requestIgnoreBattery(context: Context) {

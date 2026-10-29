@@ -12,10 +12,15 @@ import com.example.livenotify.data.Settings
 import com.example.livenotify.data.StreamerEntity
 import com.example.livenotify.monitor.MonitorService
 import com.example.livenotify.monitor.NotificationHelper
+import com.example.livenotify.BuildConfig
 import com.example.livenotify.platform.DouyinPlatform
 import com.example.livenotify.platform.LiveState
 import com.example.livenotify.platform.Outcome
 import com.example.livenotify.platform.PlatformRegistry
+import com.example.livenotify.update.ApkDownloader
+import com.example.livenotify.update.ApkInstaller
+import com.example.livenotify.update.ReleaseInfo
+import com.example.livenotify.update.UpdateApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -184,6 +189,82 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { Graph.settings.setQuiet(enabled, start, end, noNotify) }
     fun setConfirmTimes(n: Int) = viewModelScope.launch { Graph.settings.setConfirmTimes(n) }
     fun setCooldownMin(n: Int) = viewModelScope.launch { Graph.settings.setCooldownMin(n) }
+    // ── 应用内更新 ────────────────────────────────────────────
+    sealed interface UpdateState {
+        object Idle : UpdateState
+        object Checking : UpdateState
+        object UpToDate : UpdateState
+        /** downloading=true 时 percent 为进度；否则展示更新说明与下载按钮 */
+        data class Available(val info: ReleaseInfo, val downloading: Boolean = false, val percent: Int = 0) : UpdateState
+        data class Failed(val message: String) : UpdateState
+    }
+
+    private val _update = MutableStateFlow<UpdateState>(UpdateState.Idle)
+    val update: StateFlow<UpdateState> = _update
+
+    private val updateLimiter = com.example.livenotify.net.RateLimiter(5_000L)
+
+    fun dismissUpdate() { _update.value = UpdateState.Idle }
+
+    /** 手动检查更新：无论结果如何都给提示 */
+    fun checkUpdate() = viewModelScope.launch {
+        val s = _update.value
+        if (s is UpdateState.Checking) return@launch
+        if (s is UpdateState.Available && s.downloading) return@launch
+        _update.value = UpdateState.Checking
+        _update.value = when (val info = UpdateApi.latest()) {
+            null -> UpdateState.Failed("检查更新失败，请检查网络后重试")
+            else -> if (info.versionCode > BuildConfig.VERSION_CODE.toLong()) UpdateState.Available(info)
+            else UpdateState.UpToDate
+        }
+    }
+
+    /** 启动时自动检查一次：没更新就静默，有更新才弹 */
+    private var autoChecked = false
+
+    fun autoCheckUpdate() = viewModelScope.launch {
+        if (autoChecked) return@launch
+        autoChecked = true
+        if (!Graph.settings.current().autoUpdateCheck) return@launch
+        // 用户已经手动查过（或正在下载）就不要用自动检查的结果覆盖
+        if (_update.value !is UpdateState.Idle) return@launch
+        val info = UpdateApi.latest() ?: return@launch
+        if (info.versionCode > BuildConfig.VERSION_CODE.toLong()) {
+            _update.value = UpdateState.Available(info)
+        }
+    }
+
+    /** 下载新版本并拉起系统安装界面 */
+    fun downloadUpdate(info: ReleaseInfo) = viewModelScope.launch {
+        if ((_update.value as? UpdateState.Available)?.downloading == true) return@launch
+        _update.value = UpdateState.Available(info, downloading = true, percent = 0)
+        val file = ApkDownloader.download(getApplication(), info.apkUrl, info.versionName) { p ->
+            _update.value = UpdateState.Available(info, downloading = true, percent = p)
+        }
+        if (file == null) {
+            _update.value = UpdateState.Failed("下载失败，请检查网络后重试")
+            return@launch
+        }
+        if (!ApkInstaller.signatureMatches(getApplication(), file)) {
+            _update.value = UpdateState.Failed(
+                "安装包签名与当前应用不一致，系统会拒绝覆盖安装。" +
+                    "可到 Releases 页手动下载，或卸载本应用后重装（关注列表会丢失）。"
+            )
+            return@launch
+        }
+        if (!ApkInstaller.canInstall(getApplication())) {
+            ApkInstaller.openInstallPermission(getApplication())
+            _update.value = UpdateState.Failed("请先在打开的页面里允许「安装未知应用」，再回来重试")
+            return@launch
+        }
+        if (!ApkInstaller.install(getApplication(), file)) {
+            _update.value = UpdateState.Failed("没有找到可用的安装程序，请到 Releases 页手动下载")
+            return@launch
+        }
+        // 安装页已推到前台，关掉弹窗；用户返回时若没装成，可在设置页再点一次（会复用已下载的包）
+        _update.value = UpdateState.Idle
+    }
+
     fun setDouyinCookie(c: String) = viewModelScope.launch {
         Graph.settings.setDouyinCookie(c)
         _toast.value = if (c.isBlank()) "已清空 Cookie" else "Cookie 已保存到本机"
@@ -204,5 +285,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setHideMonitorNotification(v: Boolean) = viewModelScope.launch {
         Graph.settings.setHideMonitorNotification(v)
         MonitorService.refreshIfRunning(getApplication())
+    }
+
+    fun setAutoUpdateCheck(v: Boolean) = viewModelScope.launch {
+        Graph.settings.setAutoUpdateCheck(v)
     }
 }

@@ -53,6 +53,7 @@
 | **免打扰时段** | 夜间不推送（可选），时段内检测照常 |
 | **手动检测** | 右上角刷新或下拉列表立即跑一轮 |
 | **长按管理** | 长按卡片：打开直播间 / 复制链接 / 移除关注 |
+| **应用内更新** | 启动时静默检查 GitHub Releases，有新版直接弹窗，下载完拉起系统安装页，无需卸载重装 |
 | **纯本地** | 无账号、无服务端、无埋点；数据只在本机 Room 数据库 |
 
 ---
@@ -127,6 +128,17 @@ keyPassword=你的密码
 
 存在该文件即自动切换为正式签名。
 
+应用内更新要求前后版本签名一致。想给 CI 也配上同一把密钥，把 `.jks` 编码成 base64 存进仓库 Secrets：
+
+| Secret | 值 |
+|---|---|
+| `KEYSTORE_BASE64` | `keystore/livenotify.jks` 的 base64（`base64 -w0` 或 PowerShell `[Convert]::ToBase64String(...)`） |
+| `KEYSTORE_PASSWORD` | `storePassword` |
+| `KEY_ALIAS` | `livenotify` |
+| `KEY_PASSWORD` | `keyPassword` |
+
+四项齐全时 CI 出正式签名包；缺任何一项则回退 debug 签名（能装，但与正式签名包不互通）。
+
 ---
 
 ## ❓ 常见问题
@@ -136,6 +148,9 @@ keyPassword=你的密码
 
 **Q：后台过一会儿就被杀了？**
 这是厂商 ROM 的限制，不是应用 bug。去系统设置放行「自启动 / 电池优化 / 后台运行」。
+
+**Q：应用内更新提示「签名不一致」？**
+更新包必须与当前安装的版本同签名才能覆盖安装。如果你之前装的是 debug 签名包（早期 CI 产物），换正式签名包必须先卸载一次；之后同一签名的版本都能直接覆盖升级，关注列表不会丢。
 
 **Q：为什么「上次开播」是空的？**
 只有接口直接返回开播时刻的平台（斗鱼、抖音）能立刻显示；B 站 / 虎牙需要 App 先观测到一次开播才能累积出来。
@@ -188,6 +203,10 @@ app/src/main/java/com/example/livenotify/
 │   ├── HuyaPlatform.kt        虎牙：liveStatus + realLiveStatus 交叉校验
 │   └── DouyinParser.kt        抖音落地页解析（锚定 room 对象）+ 风控识别
 ├── net/Http.kt                OkHttp 封装 + 按 host 节流器
+├── update/                    应用内更新
+│   ├── UpdateApi.kt           查 GitHub Releases、解析版本与 APK 下载地址
+│   ├── ApkDownloader.kt       流式下载 + 断点复用（按版本命名）
+│   └── ApkInstaller.kt        签名比对 + FileProvider 拉起系统安装页
 ├── monitor/
 │   ├── MonitorEngine.kt       ★ 检测引擎：批量拉取 → 状态对比 → 去重 → 推送 → 落库
 │   ├── MonitorService.kt      前台服务轮询循环

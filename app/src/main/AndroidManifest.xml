@@ -19,6 +19,9 @@
     <!-- 引导用户关闭电池优化（仅在设置页点击时跳转到系统页，不默认申请） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- 应用内更新：安装下载的 APK（Android 8+ 需用户先授权「允许来自此来源的应用」） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:name=".LiveNotifyApp"
         android:allowBackup="false"
@@ -46,6 +49,17 @@
             android:name=".monitor.MonitorService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- 应用内更新：把下载好的 APK 授权给系统安装器读取（Android 7+ 禁止 file:// 跨进程） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <receiver
             android:name=".monitor.BootReceiver"
