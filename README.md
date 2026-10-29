@@ -143,6 +143,9 @@ keyPassword=你的密码
 
 ## ❓ 常见问题
 
+**Q：重启手机后不检测了？**
+国产 ROM 默认禁止第三方应用自启动，开机广播根本不会发给 App（应用侧无法绕过）。去设置页「后台运行」→「自启动管理」把本应用加进白名单，并把省电策略设为「无限制」。另一种情况是被系统的「强行停止」点过——那之后所有广播都不再送达，必须手动打开一次 App 才恢复。
+
 **Q：通知栏一直有一条「正在检测」的通知，能关掉吗？**
 这是 Android 对前台服务的合规要求，应用内无法彻底移除。两条路：设置页打开「隐藏常驻通知」把它降到最低可见度（静音、不弹窗、不显示角标）；或点设置页的「常驻通知设置」进系统渠道页，把「后台检测」渠道整个关掉——检测照常运行。
 
@@ -182,7 +185,9 @@ keyPassword=你的密码
 
 ### 为什么用前台服务而不是 WorkManager
 
-`PeriodicWorkRequest` 最小周期 **15 分钟**，且受 Doze 影响实际执行更晚，**无法实现 1~3 分钟轮询**。因此检测循环跑在 `MonitorService`（`foregroundServiceType="dataSync"`）里：`while(isActive) { runOnce(); delay(interval) }`。若你能接受 15 分钟以上间隔，把调度换成 `PeriodicWorkRequest` 即可省掉常驻通知——引擎 `MonitorEngine.runOnce()` 是纯挂起函数，两种调度可直接替换。
+`PeriodicWorkRequest` 最小周期 **15 分钟**，且受 Doze 影响实际执行更晚，**无法实现 1~3 分钟轮询**。因此检测循环跑在 `MonitorService`（`foregroundServiceType="specialUse"`）里：`while(isActive) { runOnce(); delay(interval) }`。若你能接受 15 分钟以上间隔，把调度换成 `PeriodicWorkRequest` 即可省掉常驻通知——引擎 `MonitorEngine.runOnce()` 是纯挂起函数，两种调度可直接替换。
+
+类型选 `specialUse` 而不是 `dataSync`：Android 15 给 `dataSync` 加了「24 小时累计最多运行 6 小时」的硬限制，到点系统静默停掉服务；开播提醒需要全天候运行，只能走 `specialUse`（并在清单里写明用途）。
 
 ### 项目结构
 
@@ -209,7 +214,7 @@ app/src/main/java/com/example/livenotify/
 │   └── ApkInstaller.kt        签名比对 + FileProvider 拉起系统安装页
 ├── monitor/
 │   ├── MonitorEngine.kt       ★ 检测引擎：批量拉取 → 状态对比 → 去重 → 推送 → 落库
-│   ├── MonitorService.kt      前台服务轮询循环
+│   ├── MonitorService.kt      前台服务轮询循环（specialUse 类型，划掉任务后自恢复）
 │   ├── NotificationHelper.kt  通知渠道与开播通知（点击跳直播间）
 │   └── BootReceiver.kt        开机自启（受 ROM 限制，失败静默）
 └── ui/                        Compose 界面（主列表 / 添加 / 设置）

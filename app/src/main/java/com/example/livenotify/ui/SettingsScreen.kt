@@ -3,9 +3,6 @@ package com.example.livenotify.ui
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
-import android.os.PowerManager
-import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,12 +43,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.livenotify.monitor.MonitorService
 import com.example.livenotify.monitor.NotificationHelper
 import com.example.livenotify.platform.PlatformRegistry
 import com.example.livenotify.update.ApkInstaller
 import com.example.livenotify.update.ReleaseInfo
 import com.example.livenotify.update.UpdateApi
+import com.example.livenotify.util.AutoStartHelper
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +61,17 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val updateState by vm.update.collectAsStateWithLifecycle()
     val context = LocalContext.current
+
+    // 从系统设置页返回时，服务/电池优化的状态可能已经变了，进页面重读一次
+    var resumeTick by remember { mutableStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) resumeTick++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Scaffold(
         topBar = {
@@ -304,12 +318,59 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
                     OutlinedButton(onClick = { NotificationHelper.openNotificationSettings(context) }) {
                         Text("通知权限设置")
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedButton(onClick = { requestIgnoreBattery(context) }) {
-                        Text("关闭电池优化（保活）")
-                    }
                     Text(
-                        "国产 ROM 需在「自启动 / 后台运行」中手动放行本应用，否则进程被杀后无法检测。",
+                        "开播提醒依赖通知权限；被系统关掉后只会在 App 内提示，不会弹通知。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            }
+
+            item {
+                Section("后台运行") {
+                    val running = remember(resumeTick, settings.monitorEnabled) {
+                        settings.monitorEnabled && MonitorService.isRunning
+                    }
+                    val ignoringBattery = remember(resumeTick) {
+                        AutoStartHelper.isIgnoringBatteryOptimizations(context)
+                    }
+                    StatusLine(
+                        label = "后台检测",
+                        value = when {
+                            !settings.monitorEnabled -> "已关闭"
+                            running -> "运行中"
+                            else -> "未运行"
+                        },
+                        ok = running
+                    )
+                    StatusLine(
+                        label = "电池优化",
+                        value = if (ignoringBattery) "已忽略，不受限制" else "未忽略，可能被系统限流",
+                        ok = ignoringBattery
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val hit = AutoStartHelper.openAutoStartSettings(context)
+                                context.toast(
+                                    if (hit) "在列表里允许本应用自启动"
+                                    else "已打开应用详情，在「自启动 / 后台运行」里允许本应用"
+                                )
+                            }
+                        ) { Text("自启动管理") }
+                        OutlinedButton(
+                            onClick = {
+                                if (!AutoStartHelper.requestIgnoreBatteryOptimizations(context)) {
+                                    context.toast("已忽略电池优化，无需再设置")
+                                }
+                            }
+                        ) { Text("电池优化") }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "国产 ROM 默认禁止第三方应用自启动，重启手机后不会自动检测。" +
+                            "在「自启动管理」里允许本应用，并把省电策略设为「无限制」，检测才能长期在后台运行。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline
                     )
@@ -431,6 +492,28 @@ private fun UpdateStatusBlock(vm: MainViewModel, state: MainViewModel.UpdateStat
     }
 }
 
+/** 一行状态：左侧标签，右侧结论 + 圆点颜色（ok=true 绿、false 橙） */
+@Composable
+private fun StatusLine(label: String, value: String, ok: Boolean) {
+    val cs = MaterialTheme.colorScheme
+    val color = if (ok) okColor() else cs.error
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Spacer(modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.bodyMedium, color = color)
+    }
+}
+
+/** 设置页的轻提示。用系统 Toast 而不是 Snackbar：这些操作常常伴随跳转到系统页 */
+private fun Context.toast(msg: String) {
+    android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
+}
+
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {    ElevatedCard(
         modifier = Modifier
@@ -500,21 +583,5 @@ private fun openReleases(context: Context) {
             Intent(Intent.ACTION_VIEW, Uri.parse(UpdateApi.RELEASES_PAGE))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
-    }
-}
-
-private fun requestIgnoreBattery(context: Context) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        if (pm != null && !pm.isIgnoringBatteryOptimizations(context.packageName)) {
-            runCatching {
-                context.startActivity(
-                    Intent(
-                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                        Uri.parse("package:${context.packageName}")
-                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            }
-        }
     }
 }

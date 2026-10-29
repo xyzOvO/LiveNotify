@@ -1,12 +1,17 @@
 package com.example.livenotify.monitor
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -37,10 +42,14 @@ class MonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
-        startForeground(
-            NotificationHelper.MONITOR_ID,
-            NotificationHelper.monitorNotification(this, "准备中…", 0, false)
-        )
+        val n = NotificationHelper.monitorNotification(this, "准备中…", 0, false)
+        // Android 14 起 startForeground 必须声明类型；用 ServiceCompat 兼容低版本
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(this, NotificationHelper.MONITOR_ID, n, type)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -144,10 +153,46 @@ class MonitorService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * 从最近任务划掉时，部分 ROM 会把服务连进程一起回收。
+     * 这里用 AlarmManager 在 1 秒后拉回来——它在 Android 12+ 属于
+     * 「允许后台启动前台服务」的豁免场景，比直接 startService 更稳。
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (isRunning) scheduleRestart()
+        super.onTaskRemoved(rootIntent)
+    }
+
+    private fun scheduleRestart() {
+        runCatching {
+            val i = Intent(applicationContext, MonitorService::class.java)
+            val pi = PendingIntent.getForegroundService(
+                this,
+                RESTART_REQUEST_CODE,
+                i,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val am = getSystemService(AlarmManager::class.java) ?: return
+            am.set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 1_000L, pi)
+            Log.i(TAG, "schedule restart after task removed")
+        }.onFailure { Log.w(TAG, "schedule restart failed: ${it.message}") }
+    }
+
+    /**
+     * Android 15 起，前台服务类型超时（原 dataSync 为 24 小时累计 6 小时）会回调这里。
+     * 已改用 specialUse，正常不应触发，留着做防御：不实现会直接崩溃。
+     */
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(TAG, "foreground service timeout, type=$fgsType, stopping")
+        stopSelf()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
         private const val TAG = "MonitorService"
+        private const val RESTART_REQUEST_CODE = 1001
         const val ACTION_STOP = "com.example.livenotify.ACTION_STOP_MONITOR"
         const val ACTION_REFRESH = "com.example.livenotify.ACTION_REFRESH_MONITOR"
 

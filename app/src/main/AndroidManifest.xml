@@ -9,9 +9,13 @@
     <!-- Android 13+ 通知运行时权限 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- 前台服务：1~3 分钟轮询必须常驻，Android 14 起必须声明具体类型 -->
+    <!--
+      前台服务：1~3 分钟轮询必须常驻，Android 14 起必须声明具体类型。
+      用 specialUse 而不是 dataSync：Android 15 给 dataSync 加了「24 小时累计最多跑 6 小时」的硬限制，
+      到点系统直接停服务且不提示，开播提醒会静默失效。specialUse 不受该限制。
+    -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- 开机自启（可选，部分国产 ROM 需手动放行） -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -44,11 +48,16 @@
             </intent-filter>
         </activity>
 
-        <!-- dataSync 类型：用于周期性数据同步，符合本 App 的语义 -->
+        <!-- specialUse：见上方权限注释。subtype 是给系统与审核看的一句话用途说明 -->
         <service
             android:name=".monitor.MonitorService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="持续轮询已关注主播的开播状态，开播时发本地提醒" />
+        </service>
 
         <!-- 应用内更新：把下载好的 APK 授权给系统安装器读取（Android 7+ 禁止 file:// 跨进程） -->
         <provider
@@ -68,6 +77,8 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <!-- 解锁广播作为第二道保险：部分 ROM 吞掉 BOOT_COMPLETED 但仍会发 USER_PRESENT -->
+                <action android:name="android.intent.action.USER_PRESENT" />
             </intent-filter>
         </receiver>
     </application>
