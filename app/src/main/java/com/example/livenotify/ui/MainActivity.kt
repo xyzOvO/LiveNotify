@@ -21,8 +21,13 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
+    /** 运行时授权结果是一次性回调，用自增计数通知主页面重新读取权限状态 */
+    private var permissionRevision by mutableStateOf(0)
+
     private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            permissionRevision++
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,7 +60,8 @@ class MainActivity : ComponentActivity() {
                 when (screen) {
                     Screen.Main -> MainScreen(
                         vm = androidx.lifecycle.viewmodel.compose.viewModel(),
-                        onOpenSettings = { screen = Screen.Settings }
+                        onOpenSettings = { screen = Screen.Settings },
+                        permissionRevision = permissionRevision
                     )
                     Screen.Settings -> SettingsScreen(
                         vm = androidx.lifecycle.viewmodel.compose.viewModel(),

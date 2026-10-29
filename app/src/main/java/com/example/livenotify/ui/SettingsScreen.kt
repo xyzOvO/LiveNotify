@@ -185,7 +185,12 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.outline
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedButton(onClick = { NotificationHelper.testNotification(context) }) {
+                    OutlinedButton(onClick = {
+                        // 权限没开时通知发不出去，必须说出来，否则点了像坏了
+                        if (!NotificationHelper.testNotification(context)) {
+                            vm.notify("通知权限未开启，先点下面的「通知权限设置」")
+                        }
+                    }) {
                         Text("发送测试通知")
                     }
                 }

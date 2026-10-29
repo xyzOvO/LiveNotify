@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -56,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -99,7 +101,12 @@ fun platformIconRes(platformId: String): Int? = when (platformId) {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
-fun MainScreen(vm: MainViewModel, onOpenSettings: () -> Unit) {
+fun MainScreen(
+    vm: MainViewModel,
+    onOpenSettings: () -> Unit,
+    /** 通知权限授权结果的自增计数：授权是一次性回调，用它驱动重新读取权限状态 */
+    permissionRevision: Int = 0
+) {
     val list by vm.streamers.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val lastCheck by vm.lastCheckedAt.collectAsStateWithLifecycle()
@@ -108,6 +115,23 @@ fun MainScreen(vm: MainViewModel, onOpenSettings: () -> Unit) {
     val egg by vm.egg.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
+
+    // 通知权限状态必须在两个时机重读：① 从系统通知设置页返回；② 运行时权限弹窗点了允许。
+    // Compose 不会因 Activity onResume 自动重组，不刷新的话提示条会一直挂着。
+    var canNotify by remember { mutableStateOf(NotificationHelper.canNotify(context)) }
+    LaunchedEffect(permissionRevision) {
+        canNotify = NotificationHelper.canNotify(context)
+    }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                canNotify = NotificationHelper.canNotify(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     var showAdd by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<StreamerEntity?>(null) }
@@ -173,7 +197,7 @@ fun MainScreen(vm: MainViewModel, onOpenSettings: () -> Unit) {
                     )
                 }
 
-                if (!NotificationHelper.canNotify(context)) {
+                if (!canNotify) {
                     item {
                         NoticeCard(
                             text = "通知权限未开启，开播提醒送不到你手机上。",
@@ -343,7 +367,7 @@ private fun MonitorBar(
             .fillMaxWidth()
             .padding(horizontal = 16.dp),
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = cs.surfaceVariant.copy(alpha = 0.55f)),
+        colors = CardDefaults.cardColors(containerColor = cardSurface(0.55f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(
@@ -459,7 +483,7 @@ private fun StreamerCard(
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = shape,
         colors = CardDefaults.cardColors(
-            containerColor = if (live) LiveAccent.copy(alpha = 0.055f) else cs.surfaceVariant.copy(alpha = 0.4f)
+            containerColor = if (live) LiveAccent.copy(alpha = 0.055f) else cardSurface(0.4f)
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         border = if (live) androidx.compose.foundation.BorderStroke(1.dp, LiveAccent.copy(alpha = 0.22f)) else null
@@ -765,8 +789,13 @@ private fun AddStreamerDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         PlatformChip("自动", forced == null) { forced = null }
                     }
-                    // 手动指定平台换行显示在「自动」下面
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // 手动指定平台换行显示在「自动」下面。用 FlowRow 而不是 Row：
+                    // 窄屏（≤360dp）四个 chip 一行放不下，Row 会把尾部直接裁掉。
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
                         PlatformChip("B站", forced == "bilibili") { forced = "bilibili" }
                         PlatformChip("抖音", forced == "douyin") { forced = "douyin" }
                         PlatformChip("斗鱼", forced == "douyu") { forced = "douyu" }

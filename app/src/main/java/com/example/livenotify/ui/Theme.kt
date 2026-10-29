@@ -66,6 +66,17 @@ fun okColor(): Color = if (isSystemInDarkTheme()) Color(0xFF7BD88A) else Color(0
 fun okContainer(): Color =
     if (isSystemInDarkTheme()) Color(0xFF22432B) else Color(0xFF2E7D32).copy(alpha = 0.12f)
 
+/**
+ * 卡片 / 条状容器的底色。
+ * 深色模式下 surfaceVariant 与 background 的差值本来就很小，再叠透明度会让卡片边界几乎看不见，
+ * 所以只在浅色模式降透明度（浅色 surfaceVariant 偏亮，压一点才不与背景打架）。
+ */
+@Composable
+fun cardSurface(alphaInLight: Float = 0.5f): Color {
+    val v = MaterialTheme.colorScheme.surfaceVariant
+    return if (isSystemInDarkTheme()) v else v.copy(alpha = alphaInLight)
+}
+
 /** 各平台品牌色，用于头像徽标与标签 */
 fun platformAccent(platformId: String): Color = when (platformId) {
     "bilibili" -> Color(0xFFFB7299)

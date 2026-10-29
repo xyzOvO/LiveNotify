@@ -177,8 +177,9 @@ object NotificationHelper {
         }
     }
 
-    fun testNotification(context: Context) {
-        if (!canNotify(context)) return
+    /** 发送测试通知；返回 false 表示通知权限未开启（调用方据此提示用户，别静默失败） */
+    fun testNotification(context: Context): Boolean {
+        if (!canNotify(context)) return false
         val notification = NotificationCompat.Builder(context, CHANNEL_LIVE)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("测试通知")
@@ -186,7 +187,12 @@ object NotificationHelper {
             .setContentIntent(mainPendingIntent(context))
             .setAutoCancel(true)
             .build()
-        NotificationManagerCompat.from(context).notify(Int.MAX_VALUE, notification)
+        return try {
+            NotificationManagerCompat.from(context).notify(Int.MAX_VALUE, notification)
+            true
+        } catch (_: SecurityException) {
+            false
+        }
     }
 
     /** 常驻通知。hidden=true 时改投最低可见度渠道，状态栏不再弹出常规条目。 */

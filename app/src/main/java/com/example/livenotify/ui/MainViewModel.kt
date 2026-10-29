@@ -82,7 +82,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             null
         } ?: return AddResult.Error(
                 if (platform.id == "douyin")
-                    "解析失败。抖音建议直接粘贴直播间链接（live.douyin.com/xxxx）"
+                    "解析失败。抖音建议直接粘贴直播间链接，或把 App 分享出来的整段文案粘进来"
                 else "解析失败，未能在该链接/号码中取到主播标识"
             )
 
@@ -120,12 +120,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             lastCheckedAt = System.currentTimeMillis()
         )
         if (dao.insert(entity) == -1L) return AddResult.Error("该主播已在关注列表中")
-        if (settings.value.monitorEnabled) {
+        val monitoring = settings.value.monitorEnabled
+        if (monitoring) {
             MonitorService.start(getApplication())
             // 常驻通知里的「共 N 位」要立刻跟上，否则要等下一轮轮询才变
             MonitorService.refresh(getApplication())
         }
-        _toast.value = "已关注 ${snap.nickname}"
+        // 监控关闭时得说清楚，否则用户会以为加上了就会自动提醒
+        _toast.value = if (monitoring) "已关注 ${snap.nickname}"
+        else "已关注 ${snap.nickname}，但后台检测已关闭，不会自动提醒"
         // 命中配置就排队弹一句，落款用接口返回的真实昵称
         EasterEggs.find(platform.id, anchorId, snap.displayId)?.let { hit ->
             _egg.value = hit.copy(nickname = snap.nickname)
@@ -181,7 +184,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { Graph.settings.setQuiet(enabled, start, end, noNotify) }
     fun setConfirmTimes(n: Int) = viewModelScope.launch { Graph.settings.setConfirmTimes(n) }
     fun setCooldownMin(n: Int) = viewModelScope.launch { Graph.settings.setCooldownMin(n) }
-    fun setDouyinCookie(c: String) = viewModelScope.launch { Graph.settings.setDouyinCookie(c) }
+    fun setDouyinCookie(c: String) = viewModelScope.launch {
+        Graph.settings.setDouyinCookie(c)
+        _toast.value = if (c.isBlank()) "已清空 Cookie" else "Cookie 已保存到本机"
+    }
 
     /** 开播提醒响铃。Android 8+ 由渠道决定，改完必须重建渠道才生效 */
     fun setNotifySound(v: Boolean) = viewModelScope.launch {
