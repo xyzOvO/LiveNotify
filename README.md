@@ -4,7 +4,9 @@
 
 **关注的主播开播时，一条通知直达直播间 —— 一个开源的 Android 多平台开播提醒应用**
 
-支持 **B 站 / 抖音 / 斗鱼 / 虎牙**。前台服务常驻轮询（默认 120 秒），开播推送本地通知，点击直接跳转直播间；记录「上次开播距今」与「已播时长」，多平台状态一眼看完。
+支持 **B 站 / 抖音 / 斗鱼 / 虎牙**。前台服务常驻轮询（默认 120 秒），开播推送本地通知，**点通知直达直播间**；记录「上次开播距今」与「已播时长」，多平台状态一眼看完。
+
+还带一个 **B 站数据页**：粉丝走势、月度互动观众、生涯统计，以及任意 UID 的互动分析（发言 / 打赏 / 活跃时段 / 常去直播间）。每个数字都标了统计口径，不拿「生涯累计」冒充「最近一个月」。
 
 ![Release](https://img.shields.io/github/v/release/xyzOvO/LiveNotify?style=flat-square) ![Stars](https://img.shields.io/github/stars/xyzOvO/LiveNotify?style=flat-square) ![License](https://img.shields.io/github/license/xyzOvO/LiveNotify?style=flat-square) ![Platform](https://img.shields.io/badge/platform-Android-3DDC84?style=flat-square) ![Kotlin](https://img.shields.io/badge/Kotlin-1.9.25-7F52FF?style=flat-square) ![Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?style=flat-square) ![minSdk](https://img.shields.io/badge/minSdk-26-3DDC84?style=flat-square)
 

@@ -88,3 +88,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/release/app-release.apk
+          # 以前 Release 说明一律是空白，用户点进去只能看到附件。
+          # 让 GitHub 按提交记录自动生成变更列表，Release 页面至少有东西可读。
+          generate_release_notes: true
