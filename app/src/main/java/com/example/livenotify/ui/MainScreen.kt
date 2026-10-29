@@ -108,7 +108,9 @@ fun MainScreen(
     vm: MainViewModel,
     onOpenSettings: () -> Unit,
     /** 通知权限授权结果的自增计数：授权是一次性回调，用它驱动重新读取权限状态 */
-    permissionRevision: Int = 0
+    permissionRevision: Int = 0,
+    /** 打开 B 站数据页（传入该主播的 uid） */
+    onOpenStats: (Long) -> Unit = {}
 ) {
     val list by vm.streamers.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
@@ -280,6 +282,12 @@ fun MainScreen(
                 actionFor = null
                 vm.notify("已复制直播间链接")
             },
+            onStats = if (s.platformId == "bilibili") {
+                {
+                    actionFor = null
+                    onOpenStats(s.anchorId.toLongOrNull() ?: 0L)
+                }
+            } else null,
             onRemove = { actionFor = null; pendingDelete = s },
             onDismiss = { actionFor = null }
         )
@@ -763,6 +771,8 @@ private fun StreamerActionDialog(
     s: StreamerEntity,
     onOpen: () -> Unit,
     onCopy: () -> Unit,
+    /** 仅 B 站主播有数据可看，其余平台传 null 时不显示入口 */
+    onStats: (() -> Unit)?,
     onRemove: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -784,6 +794,15 @@ private fun StreamerActionDialog(
                 }
                 TextButton(onClick = onCopy, modifier = Modifier.fillMaxWidth()) {
                     Text("复制直播间链接", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Start)
+                }
+                if (onStats != null) {
+                    TextButton(onClick = onStats, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            "粉丝走势与数据",
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Start
+                        )
+                    }
                 }
                 TextButton(onClick = onRemove, modifier = Modifier.fillMaxWidth()) {
                     Text(

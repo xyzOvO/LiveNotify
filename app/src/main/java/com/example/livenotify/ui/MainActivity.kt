@@ -54,17 +54,32 @@ class MainActivity : ComponentActivity() {
         setContent {
             LiveNotifyTheme {
                 var screen by rememberSaveable { mutableStateOf(Screen.Main) }
-                // 拦截系统返回与边缘侧滑手势：在设置页时先回主页面，而不是直接退出到桌面。
+                // B 站数据页要带上是「看哪个主播」，用 0 表示由页面自己挑列表里第一个
+                var statsUid by rememberSaveable { mutableStateOf(0L) }
+                // 拦截系统返回与边缘侧滑手势：二级页面先回主页面，而不是直接退出到桌面。
                 // 主页面不拦截，返回键/侧滑保持「退出 App」的默认行为。
-                BackHandler(enabled = screen == Screen.Settings) { screen = Screen.Main }
+                BackHandler(enabled = screen != Screen.Main) { screen = Screen.Main }
                 when (screen) {
                     Screen.Main -> MainScreen(
                         vm = androidx.lifecycle.viewmodel.compose.viewModel(),
                         onOpenSettings = { screen = Screen.Settings },
-                        permissionRevision = permissionRevision
+                        permissionRevision = permissionRevision,
+                        onOpenStats = { uid ->
+                            statsUid = uid
+                            screen = Screen.Stats
+                        }
                     )
                     Screen.Settings -> SettingsScreen(
                         vm = androidx.lifecycle.viewmodel.compose.viewModel(),
+                        onBack = { screen = Screen.Main },
+                        onOpenStats = {
+                            statsUid = 0L
+                            screen = Screen.Stats
+                        }
+                    )
+                    Screen.Stats -> StatsScreen(
+                        vm = androidx.lifecycle.viewmodel.compose.viewModel<StatsViewModel>(),
+                        initialUid = statsUid,
                         onBack = { screen = Screen.Main }
                     )
                 }
@@ -73,4 +88,4 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Screen { Main, Settings }
+enum class Screen { Main, Settings, Stats }

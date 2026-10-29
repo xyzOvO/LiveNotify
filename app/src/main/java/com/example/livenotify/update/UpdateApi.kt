@@ -58,7 +58,7 @@ object UpdateApi {
             return null
         }
 
-        val tag = root.optString("tag_name", "").trim()
+        val tag = root.text("tag_name").trim()
         val m = Regex("""^v(\d+)\.(\d+)\.(\d+)$""").matchEntire(tag)
         if (m == null) return null
 
@@ -72,8 +72,8 @@ object UpdateApi {
         val minor = m.groupValues[2].toLong()
         val patch = m.groupValues[3].toLong()
 
-        val url = apk.optString("browser_download_url", "")
-        val name = apk.optString("name", "app-release.apk")
+        val url = apk.text("browser_download_url")
+        val name = apk.text("name").ifBlank { "app-release.apk" }
         val size = apk.optLong("size", 0L)
 
         return ReleaseInfo(
@@ -83,8 +83,8 @@ object UpdateApi {
             apkUrl = url,
             assetName = name,
             sizeBytes = size,
-            notes = root.optString("body", "").trim(),
-            publishedAt = root.optString("published_at", "")
+            notes = root.text("body").trim(),
+            publishedAt = root.text("published_at")
         )
     }
 
@@ -114,10 +114,17 @@ object UpdateApi {
     private fun pickApk(assets: JSONArray): JSONObject? {
         for (i in 0 until assets.length()) {
             val a = assets.optJSONObject(i) ?: continue
-            val n = a.optString("name", "")
+            val n = a.text("name")
             if (!n.endsWith(".apk", ignoreCase = true)) continue
-            if (a.optString("browser_download_url", "").isNotBlank()) return a
+            if (a.text("browser_download_url").isNotBlank()) return a
         }
         return null
     }
 }
+
+/**
+ * org.json 的 optString 在字段值为 JSON null 时返回字符串 "null"，不是空串。
+ * GitHub 的 release body 允许为空，直接透传会让界面出现一个 "null"。
+ */
+private fun JSONObject.text(key: String): String =
+    optString(key, "").let { if (it == "null") "" else it }

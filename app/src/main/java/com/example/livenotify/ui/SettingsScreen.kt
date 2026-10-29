@@ -57,7 +57,12 @@ import com.example.livenotify.util.AutoStartHelper
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
+fun SettingsScreen(
+    vm: MainViewModel,
+    onBack: () -> Unit,
+    /** 打开 B 站数据页（不指定主播，进去自己选） */
+    onOpenStats: () -> Unit = {}
+) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val updateState by vm.update.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -288,6 +293,24 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
                             )
                         }
                     }
+                }
+            }
+
+            item {
+                Section("B站数据") {
+                    Text(
+                        "粉丝数历史曲线、月度互动观众与付费趋势、生涯统计；也可以填任意 UID 查看他的互动记录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(onClick = onOpenStats) { Text("查看 B站数据") }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "数据来自 danmakus.com 的公开统计（社区采集，非 B 站官方），只发送 uid，不需要登录。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.8f)
+                    )
                 }
             }
 
