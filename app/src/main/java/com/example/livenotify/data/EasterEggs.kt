@@ -14,9 +14,6 @@ package com.example.livenotify.data
  *   - 展示名：仅作代码可读性备注，弹窗落款用的是接口返回的真实昵称。
  *
  * 匹配不上就静默不弹，不会影响正常添加流程。
- *
- * 注：具体条目不随公开仓库分发，占位符 `@@ENTRIES@@` 处保持为空即可，
- * 需要时在本地按上面的格式补上。
  * ────────────────────────────────────────────────────────────────
  */
 object EasterEggs {
@@ -32,7 +29,13 @@ object EasterEggs {
         val platformId: String,
         val id: String,
         val nickname: String,
-        val text: String
+        val text: String,
+        /**
+         * 是否同时按展示号码（房间号）匹配。
+         * B 站 uid 偶尔会和别人的直播间房号数字撞车（例如 uid 7706705 与某个 7706705 房间），
+         * 撞车时置 false，只认 uid，避免给不相干的主播弹词。
+         */
+        val matchDisplayId: Boolean = true
     )
 
     private val ENTRIES: List<Entry> = listOf(
@@ -43,13 +46,18 @@ object EasterEggs {
         "${it.platformId}:${it.id.trim()}" to Egg(it.platformId, it.nickname, it.text)
     }
 
+    /** 展示号码索引：只收 matchDisplayId = true 的条目 */
+    private val BY_DISPLAY: Map<String, Egg> = ENTRIES.filter { it.matchDisplayId }.associate {
+        "${it.platformId}:${it.id.trim()}" to Egg(it.platformId, it.nickname, it.text)
+    }
+
     /**
-     * 按 平台 + 标识 查配置。anchorId（uid / web_rid）与 displayId（房间号）都会尝试，
+     * 按 平台 + 标识 查配置。先按 anchorId（uid / web_rid）匹配，再退到 displayId（房间号），
      * 这样无论用户是用主键还是房间号添加的，都能命中同一条。
      */
     fun find(platformId: String, anchorId: String, displayId: String): Egg? =
         BY_KEY["$platformId:${anchorId.trim()}"]
-            ?: BY_KEY["$platformId:${displayId.trim()}"]
+            ?: BY_DISPLAY["$platformId:${displayId.trim()}"]
 
     /** 供设置/关于页展示已配置数量 */
     fun count(): Int = ENTRIES.size
