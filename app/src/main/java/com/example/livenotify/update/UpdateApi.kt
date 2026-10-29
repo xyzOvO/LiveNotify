@@ -36,8 +36,13 @@ object UpdateApi {
     /**
      * 取最新正式发布。返回 null 表示请求失败、被限流，或该发布下没有 APK 附件。
      * 只认形如 v1.2.3 的 tag，其余一律当作「没有新版本」，避免误报。
+     *
+     * api.github.com 在部分网络下会被限流或连不上，此时退一步走 Releases 页：
+     * /releases/latest 会 302 到 /releases/tag/vX.Y.Z，拿到 tag 就能拼出下载地址。
      */
-    suspend fun latest(): ReleaseInfo? {
+    suspend fun latest(): ReleaseInfo? = fromApi() ?: fromHtml()
+
+    private suspend fun fromApi(): ReleaseInfo? {
         val body: String
         try {
             body = Http.getJson(LATEST, limiter)
@@ -80,6 +85,28 @@ object UpdateApi {
             sizeBytes = size,
             notes = root.optString("body", "").trim(),
             publishedAt = root.optString("published_at", "")
+        )
+    }
+
+    /** 兜底：只看 Releases 页的重定向目标，拿不到更新说明 */
+    private suspend fun fromHtml(): ReleaseInfo? {
+        val finalUrl = Http.finalUrl("$RELEASES_PAGE/latest", limiter) ?: return null
+        val tag = Regex("""/releases/tag/(v\d+\.\d+\.\d+)$""").find(finalUrl.trimEnd('/'))?.groupValues?.get(1)
+            ?: return null
+        val m = Regex("""^v(\d+)\.(\d+)\.(\d+)$""").matchEntire(tag) ?: return null
+        val major = m.groupValues[1].toLong()
+        val minor = m.groupValues[2].toLong()
+        val patch = m.groupValues[3].toLong()
+        val name = "app-release.apk"
+        return ReleaseInfo(
+            tagName = tag,
+            versionName = "$major.$minor.$patch",
+            versionCode = major * 10000L + minor * 100L + patch,
+            apkUrl = "https://github.com/$OWNER/$REPO/releases/download/$tag/$name",
+            assetName = name,
+            sizeBytes = 0L,
+            notes = "",
+            publishedAt = ""
         )
     }
 
