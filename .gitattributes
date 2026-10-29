@@ -1,0 +1,12 @@
+# 统一文本换行，避免跨平台协作时整文件 diff
+* text=auto eol=lf
+
+# Windows 脚本必须 CRLF，Unix 脚本必须 LF（否则 ./gradlew 报 ^M 错误）
+*.bat text eol=crlf
+gradlew text eol=lf
+
+# 二进制资源禁止任何转换
+*.jar binary
+*.png binary
+*.jpg binary
+*.apk binary

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">开播提醒</string>
+    <string name="notification_channel_live">开播提醒</string>
+    <string name="notification_channel_live_desc">关注的主播开播时推送通知</string>
+    <string name="monitor_channel_name">后台检测</string>
+    <string name="monitor_channel_desc">常驻通知，用于保持开播检测运行</string>
+    <string name="monitor_channel_desc_hidden">开启「隐藏常驻通知」后使用该渠道，保持检测的同时尽量不打扰</string>
+</resources>
