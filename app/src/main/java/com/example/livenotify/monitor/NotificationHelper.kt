@@ -28,7 +28,6 @@ object NotificationHelper {
     private val VIBRATE_PATTERN = longArrayOf(0, 260, 160, 260)
 
     fun createChannels(context: Context, sound: Boolean = true, vibrate: Boolean = true) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         nm.createNotificationChannel(
@@ -74,7 +73,6 @@ object NotificationHelper {
      * 所以只能删掉渠道再按新参数重建（代价：会重置用户在该渠道上的手动调整）。
      */
     fun applyAlertSettings(context: Context, sound: Boolean, vibrate: Boolean) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.deleteNotificationChannel(CHANNEL_LIVE)
         nm.createNotificationChannel(
@@ -90,7 +88,6 @@ object NotificationHelper {
     }
 
     private fun applyAlert(ch: NotificationChannel, sound: Boolean, vibrate: Boolean) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         if (sound) {
             ch.setSound(
                 Settings.System.DEFAULT_NOTIFICATION_URI,
@@ -111,21 +108,13 @@ object NotificationHelper {
 
     /** 跳转到系统通知设置（应用级），供权限缺失提示条使用 */
     fun openNotificationSettings(context: Context) {
-        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-        } else {
-            Intent(
-                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                Uri.parse("package:${context.packageName}")
-            )
-        }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { context.startActivity(intent) }
     }
 
     /** 跳转到某个通知渠道的系统设置页，用户可在此彻底关闭该渠道 */
     fun openChannelSettings(context: Context, channelId: String) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         runCatching {
             context.startActivity(
                 Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)

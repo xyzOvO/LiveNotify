@@ -27,8 +27,9 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: 单元测试
-        run: ./gradlew testDebugUnitTest
+      # lint 的 error 会让构建失败，warning 只记录——用它挡住「权限没判」「资源重复」这类回归
+      - name: 静态检查与单元测试
+        run: ./gradlew lintDebug testDebugUnitTest
 
       - name: 构建 Debug APK
         run: ./gradlew assembleDebug

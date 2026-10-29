@@ -1,5 +1,6 @@
 package com.example.livenotify.util
 
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -19,12 +20,12 @@ object AutoStartHelper {
 
     /** 是否已被排除电池优化（true = 不受后台限制，最理想） */
     fun isIgnoringBatteryOptimizations(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return false
         return pm.isIgnoringBatteryOptimizations(context.packageName)
     }
 
     /** 弹系统「是否允许后台运行」对话框（已忽略时不重复弹） */
+    @SuppressLint("BatteryLife") // 仅在用户主动点按钮时调用，且不用于上架 Play
     fun requestIgnoreBatteryOptimizations(context: Context): Boolean {
         if (isIgnoringBatteryOptimizations(context)) return false
         return runCatching {

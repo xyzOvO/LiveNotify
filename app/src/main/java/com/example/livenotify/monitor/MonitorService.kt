@@ -1,10 +1,12 @@
 package com.example.livenotify.monitor
 
+import android.Manifest
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -128,6 +130,16 @@ class MonitorService : Service() {
     }
 
     private suspend fun publish(text: String, count: Int) {
+        // Android 13 起通知是运行时权限，被拒时 notify() 会抛 SecurityException。
+        // 判断必须写在本方法内，lint 才会认可；前台服务那条由 startForeground 发出，不受影响。
+        val granted =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
+            } else {
+                NotificationManagerCompat.from(this).areNotificationsEnabled()
+            }
+        if (!granted) return
         val hidden = try {
             settings.current().hideMonitorNotification
         } catch (t: Throwable) {
@@ -140,11 +152,6 @@ class MonitorService : Service() {
                     NotificationHelper.monitorNotification(this, text, count, hidden)
                 )
         }
-    }
-
-    /** 立即执行一次检测（设置页「立即检测」按钮） */
-    fun triggerNow() {
-        if (loopJob?.isActive != true) startLoop()
     }
 
     override fun onDestroy() {
@@ -220,12 +227,10 @@ class MonitorService : Service() {
 
         fun start(context: Context) {
             runCatching {
-                val i = Intent(context, MonitorService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    ContextCompat.startForegroundService(context, i)
-                } else {
-                    context.startService(i)
-                }
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, MonitorService::class.java)
+                )
             }.onFailure { Log.w(TAG, "start failed: ${it.message}") }
         }
 

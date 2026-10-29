@@ -22,13 +22,10 @@ import java.security.MessageDigest
 object ApkInstaller {
 
     /** Android 8 起需要用户先授权「允许来自此来源的应用」，否则安装页会直接被拒 */
-    fun canInstall(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
-        return context.packageManager.canRequestPackageInstalls()
-    }
+    fun canInstall(context: Context): Boolean =
+        context.packageManager.canRequestPackageInstalls()
 
     fun openInstallPermission(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val i = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
         i.data = Uri.parse("package:${context.packageName}")
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
