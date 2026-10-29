@@ -146,6 +146,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         MonitorService.refreshIfRunning(getApplication())
     }
 
+    /**
+     * 撤销移除：重新插入一行。
+     * 用新 id（copy(id = 0)）而不是沿用旧 id——旧行可能已被复用，且唯一索引冲突时 insert 会静默忽略，
+     * 用新 id 至少能保证「没加过就恢复成功」。
+     */
+    fun restore(s: StreamerEntity) = viewModelScope.launch {
+        if (dao.insert(s.copy(id = 0)) != -1L) {
+            MonitorService.refreshIfRunning(getApplication())
+        }
+    }
+
     fun setMonitorEnabled(enabled: Boolean) = viewModelScope.launch {
         Graph.settings.setMonitorEnabled(enabled)
         if (enabled) MonitorService.start(getApplication()) else MonitorService.stop(getApplication())

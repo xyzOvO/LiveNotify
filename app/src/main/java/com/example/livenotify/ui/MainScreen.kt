@@ -49,8 +49,10 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -117,6 +119,7 @@ fun MainScreen(
     val updateState by vm.update.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     // 通知权限状态必须在两个时机重读：① 从系统通知设置页返回；② 运行时权限弹窗点了允许。
     // Compose 不会因 Activity onResume 自动重组，不刷新的话提示条会一直挂着。
@@ -288,7 +291,21 @@ fun MainScreen(
             title = { Text("移除关注") },
             text = { Text("确定不再关注「${s.nickname}」吗？") },
             confirmButton = {
-                TextButton(onClick = { vm.remove(s); pendingDelete = null }) { Text("移除") }
+                TextButton(
+                    onClick = {
+                        vm.remove(s)
+                        pendingDelete = null
+                        // 误删成本不低（要重新解析添加），给一次后悔机会
+                        scope.launch {
+                            val r = snackbar.showSnackbar(
+                                message = "已移除「${s.nickname}」",
+                                actionLabel = "撤销",
+                                duration = SnackbarDuration.Short
+                            )
+                            if (r == SnackbarResult.ActionPerformed) vm.restore(s)
+                        }
+                    }
+                ) { Text("移除") }
             },
             dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } }
         )
@@ -395,7 +412,8 @@ private fun MonitorBar(
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    "每 ${intervalSec.coerceAtLeast(1)} 秒 · 上次 ${Format.relative(lastCheck)}",
+                    // 「基础间隔」而不是「每 N 秒」：移动网络会按倍数拉长、免打扰时段再放大 5 倍
+                    "基础间隔 ${intervalSec.coerceAtLeast(1)} 秒 · 上次 ${Format.relative(lastCheck)}",
                     style = MaterialTheme.typography.labelSmall,
                     color = cs.outline
                 )
@@ -527,10 +545,16 @@ private fun StreamerCard(
                         append(PlatformRegistry.get(s.platformId)?.displayName ?: s.platformId)
                         append(" · ")
                         append(s.displayId)
+                        // 平台附注（B 站「轮播中」、斗鱼分区名）：不显示的话，
+                        // 轮播直播间会被当成「未开播」，用户看不出为什么
+                        if (s.note.isNotBlank()) {
+                            append(" · ")
+                            append(s.note)
+                        }
                         if (s.missing) append(" · 已失效")
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = cs.outline,
+                    color = if (s.note.isNotBlank() && !s.isLive) cs.onSurface.copy(alpha = 0.7f) else cs.outline,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -555,63 +579,75 @@ private fun StreamerCard(
 @Composable
 private fun TimeLine(s: StreamerEntity, now: Long) {
     val cs = MaterialTheme.colorScheme
-    when {
-        s.missing -> Text(
-            "⚠ ${s.lastError ?: "主播或直播间不存在"}",
-            style = MaterialTheme.typography.labelSmall,
-            color = cs.error
-        )
+    Column {
+        when {
+            s.missing -> Text(
+                "⚠ ${s.lastError ?: "主播或直播间不存在"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.error
+            )
 
-        s.errorCount >= 3 -> Text(
-            "⚠ ${s.lastError ?: "检测异常"}（连续 ${s.errorCount} 次）",
-            style = MaterialTheme.typography.labelSmall,
-            color = cs.error
-        )
+            s.errorCount >= 3 -> Text(
+                "⚠ ${s.lastError ?: "检测异常"}（连续 ${s.errorCount} 次）",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.error
+            )
 
-        s.isLive -> {
-            val playedMs = if (s.liveStartAt > 0) now - s.liveStartAt * 1000L else 0L
-            val showSpan = playedMs in 0..(20L * 3_600_000L)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (showSpan) "已播 " + Format.span(playedMs) else "直播中",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = LiveAccent,
-                    fontWeight = FontWeight.Medium
-                )
-                if (s.liveStartAt > 0) {
+            s.isLive -> {
+                val playedMs = if (s.liveStartAt > 0) now - s.liveStartAt * 1000L else 0L
+                val showSpan = playedMs in 0..(20L * 3_600_000L)
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "  ·  ${Format.clock(s.liveStartAt * 1000L)} 开播",
+                        if (showSpan) "已播 " + Format.span(playedMs) else "直播中",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LiveAccent,
+                        fontWeight = FontWeight.Medium
+                    )
+                    if (s.liveStartAt > 0) {
+                        Text(
+                            "  ·  ${Format.clock(s.liveStartAt * 1000L)} 开播",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = cs.outline
+                        )
+                    }
+                }
+            }
+
+            s.lastLiveStartAt > 0 -> {
+                val rel = Format.sinceSec(s.lastLiveStartAt)
+                val abs = Format.dateTime(s.lastLiveStartAt * 1000L)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "上次开播 $rel",
                         style = MaterialTheme.typography.labelSmall,
                         color = cs.outline
                     )
+                    if (rel != abs) {
+                        Text(
+                            "  ·  $abs",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = cs.outline.copy(alpha = 0.62f)
+                        )
+                    }
                 }
             }
+
+            else -> Text(
+                "暂无开播记录",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline
+            )
         }
 
-        s.lastLiveStartAt > 0 -> {
-            val rel = Format.sinceSec(s.lastLiveStartAt)
-            val abs = Format.dateTime(s.lastLiveStartAt * 1000L)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "上次开播 $rel",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.outline
-                )
-                if (rel != abs) {
-                    Text(
-                        "  ·  $abs",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = cs.outline.copy(alpha = 0.62f)
-                    )
-                }
-            }
+        // 失败 1~2 次时状态仍是「未开播」，不补一句用户会以为一切正常（3 次以上上面已标红）
+        if (!s.missing && s.errorCount in 1..2) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "上次检测失败 ${s.errorCount} 次 · ${s.lastError ?: "网络异常"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.error.copy(alpha = 0.7f)
+            )
         }
-
-        else -> Text(
-            "暂无开播记录",
-            style = MaterialTheme.typography.labelSmall,
-            color = cs.outline
-        )
     }
 }
 
@@ -773,7 +809,8 @@ private fun AddStreamerDialog(vm: MainViewModel, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        // 请求进行中点外部/返回键会让协程被取消、添加静默中断，busy 时直接忽略
+        onDismissRequest = { if (!busy) onDismiss() },
         title = { Text("添加关注") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -844,7 +881,7 @@ private fun AddStreamerDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 }
             ) { Text("添加") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+        dismissButton = { TextButton(enabled = !busy, onClick = onDismiss) { Text("取消") } }
     )
 }
 

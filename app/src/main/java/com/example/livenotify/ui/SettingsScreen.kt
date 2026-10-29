@@ -145,6 +145,15 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
                             ) { vm.setQuiet(true, settings.quietStartMin, it * 60, settings.quietNoNotify) }
                         }
                         Spacer(modifier = Modifier.height(4.dp))
+                        // 起止相同时区间为空，免打扰实际不会生效——不提示的话用户会以为设置成功了
+                        if (settings.quietStartMin == settings.quietEndMin) {
+                            Text(
+                                "开始与结束时间相同，免打扰不会生效",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
                         SwitchRow(
                             label = "该时段内不推送（仍检测）",
                             checked = settings.quietNoNotify,

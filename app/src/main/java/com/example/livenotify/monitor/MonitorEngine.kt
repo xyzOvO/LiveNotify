@@ -147,6 +147,8 @@ class MonitorEngine(
                             nickname = snap.nickname.ifBlank { s.nickname },
                             avatarUrl = snap.avatarUrl ?: s.avatarUrl,
                             title = snap.title.ifBlank { s.title },
+                            // 平台附注跟着最新一次检测走；本次没给就清空，避免残留旧状态
+                            note = snap.note?.takeIf { it.isNotBlank() } ?: "",
                             roomUrl = snap.roomUrl,
                             displayId = snap.displayId,
                             isLive = confirmedLive,

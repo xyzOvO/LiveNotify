@@ -16,6 +16,8 @@ data class StreamerEntity(
     val nickname: String,
     val avatarUrl: String? = null,
     val title: String = "",
+    /** 平台附注：B 站轮播/短号、斗鱼分区名等，展示在平台行后面 */
+    val note: String = "",
     val roomUrl: String,
 
     val isLive: Boolean = false,     // 最近一次成功检测到的开播状态
