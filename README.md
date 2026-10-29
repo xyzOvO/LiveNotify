@@ -89,6 +89,26 @@
 
 卡片头像右下角带平台官方徽标，开播时整卡淡红高亮并呼吸描边，相对时间每 20 秒自动刷新。
 
+<p align="center">
+  <img src="docs/screenshot-actions.png" width="240" alt="点击或长按卡片弹出的操作面板">
+  <img src="docs/screenshot-add.png" width="240" alt="添加关注弹窗：链接 / 房间号 / 分享文案，平台可手动指定">
+  <img src="docs/screenshot-settings.png" width="240" alt="设置页：各平台接口状态与 B 站数据入口">
+</p>
+<p align="center">
+  <sub><b>操作面板</b> 点击或长按卡片唤出　·　<b>添加关注</b> 粘贴链接或房间号　·　<b>平台接口状态</b> 每家的实现方式与降级说明</sub>
+</p>
+
+<p align="center">
+  <img src="docs/screenshot-fans.png" width="240" alt="B 站数据：粉丝数概览、粉丝走势曲线、月度互动观众">
+  <img src="docs/screenshot-career.png" width="240" alt="月度互动观众明细与生涯统计">
+  <img src="docs/screenshot-interaction.png" width="240" alt="互动事件：任意 UID 的发言、打赏、活跃走势">
+</p>
+<p align="center">
+  <sub><b>粉丝走势</b> 概览 / 采样曲线 / 月度观众　·　<b>生涯统计</b> 首播起的累计值　·　<b>互动事件</b> 任意 UID 的行为分析</sub>
+</p>
+
+> 每个统计数字旁边都标了口径：粉丝是「截至某日的快照」，场次与总收入是「生涯累计」，粉丝走势写明「社区采集区间、多少个采样点、跨多少天」——避免把第三方采集到的片段当成完整历史。接口与边界见下方 **B 站数据** 一节。
+
 ---
 
 ## 🛠 构建
