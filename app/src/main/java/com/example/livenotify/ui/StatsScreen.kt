@@ -701,7 +701,7 @@ private fun RecentEventsCard(events: List<UserEvent>) {
                     fontWeight = FontWeight.Medium,
                     color = platformAccent("bilibili"),
                     maxLines = 1,
-                    modifier = Modifier.width(52.dp)
+                    modifier = Modifier.width(64.dp)
                 )
                 Column(Modifier.weight(1f)) {
                     Text(

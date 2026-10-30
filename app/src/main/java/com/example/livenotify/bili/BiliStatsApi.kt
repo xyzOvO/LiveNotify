@@ -175,8 +175,12 @@ object BiliStatsApi {
 
     /** 把一条记录的 payload 整理成人话；空文本也保留条目，由界面显示占位符 */
     private fun eventText(type: Int, p: JSONObject?): String = when (type) {
-        0 -> p?.text("rawText").orEmpty()
-        1 -> {
+        0 -> p?.text("rawText").orEmpty().ifBlank {
+            // payloadKind=2 的弹幕是房间表情，payload 里只有 roomEmojiId，没有文字
+            if (p?.has("roomEmojiId") == true) "［表情］" else ""
+        }
+        // 礼物（1）与上舰（2）的 payload 同形：{name, count, price}
+        1, 2 -> {
             val name = p?.text("name").orEmpty().ifBlank { "礼物" }
             val count = p?.optInt("count", 0) ?: 0
             val price = p?.optDouble("price", 0.0) ?: 0.0
