@@ -71,6 +71,7 @@ import com.example.livenotify.bili.DayStat
 import com.example.livenotify.bili.FansPoint
 import com.example.livenotify.bili.TrendMonth
 import com.example.livenotify.bili.UserAnalysis
+import com.example.livenotify.bili.UserEvent
 import com.example.livenotify.data.StreamerEntity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -503,6 +504,7 @@ private fun CareerCard(c: CareerStats) {
 @Composable
 private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
     val analysis by vm.analysis.collectAsStateWithLifecycle()
+    val recent by vm.recent.collectAsStateWithLifecycle()
     val cs = MaterialTheme.colorScheme
     var uidText by rememberSaveable { mutableStateOf(if (defaultUid > 0) defaultUid.toString() else "") }
     var rangeDays by rememberSaveable { mutableIntStateOf(90) }
@@ -601,6 +603,27 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
             }
         }
 
+        // 最近的互动：轻查询，独立于分析任务渲染；分析失败也照样能看
+        when (val r = recent) {
+            is StatsViewModel.RecentUi.Loading -> item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("取最近的互动…", style = MaterialTheme.typography.labelSmall, color = cs.outline)
+                }
+            }
+
+            is StatsViewModel.RecentUi.Failed -> item {
+                Text("最近的互动取不到：${r.message}", style = MaterialTheme.typography.labelSmall, color = cs.outline)
+            }
+
+            is StatsViewModel.RecentUi.Done -> if (r.events.isNotEmpty()) {
+                item { RecentEventsCard(r.events) }
+            }
+
+            else -> {}
+        }
+
         (analysis as? StatsViewModel.AnalysisUi.Done)?.let { done ->
             val d = done.data
             if (d.summary.messages == 0 && d.summary.interactions == 0) {
@@ -630,6 +653,75 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
                 if (d.topPayments.isNotEmpty()) item { PaymentCard(d) }
                 if (d.rhythm.isNotEmpty()) item { RhythmCard(d) }
                 if (d.wordCloud.isNotEmpty()) item { WordCloudCard(d) }
+            }
+        }
+    }
+}
+
+/**
+ * 最近的互动：逐条记录，按时间倒序（最近在前）。
+ *
+ * 每行的时间、类型、内容、直播间来自同一条服务端记录，用固定宽度的时间列
+ * 对齐，内容再长也不会把时间挤歪——这是「不错位」的关键。
+ */
+@Composable
+private fun RecentEventsCard(events: List<UserEvent>) {
+    val cs = MaterialTheme.colorScheme
+    val fmt = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
+    SectionCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("最近的互动", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text("最近在前 · 共 ${events.size} 条", style = MaterialTheme.typography.labelSmall, color = cs.outline)
+        }
+        Text(
+            "该用户发出的弹幕 / 礼物 / 上舰 / 醒目留言，不含仅进场",
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.outline.copy(alpha = 0.7f)
+        )
+        Spacer(Modifier.height(8.dp))
+        events.forEach { e ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                // 固定宽度时间列：整列对齐，不随内容长度漂移
+                Text(
+                    fmt.format(Date(e.ts)),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.outline,
+                    maxLines = 1,
+                    modifier = Modifier.width(86.dp)
+                )
+                Text(
+                    eventLabel(e.type.toString()),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = platformAccent("bilibili"),
+                    maxLines = 1,
+                    modifier = Modifier.width(52.dp)
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        e.text.ifBlank { "（无文本）" },
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3
+                    )
+                    val where = buildList {
+                        if (e.channelName.isNotBlank()) add(e.channelName)
+                        if (e.liveTitle.isNotBlank()) add(e.liveTitle)
+                    }.joinToString(" · ")
+                    if (where.isNotBlank()) {
+                        Text(
+                            where,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = cs.outline.copy(alpha = 0.7f),
+                            maxLines = 1
+                        )
+                    }
+                }
             }
         }
     }

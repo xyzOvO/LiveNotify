@@ -136,6 +136,64 @@ object BiliStatsApi {
     }
 
     /**
+     * 某用户最近的互动记录（发言 / 礼物 / 上舰 / 醒目留言），按时间倒序、最近在前。
+     *
+     * 数据源是「用户历史」接口：返回该用户出现过的直播场次，每场附他本人的
+     * 弹幕/打赏记录。服务端的排序是「场次按开播倒序、场次内记录按时间正序」，
+     * 直接拼接会让时间来回跳——所以必须摊平成单条事件后按 ts 整体重排，
+     * 每条事件的时间、类型、内容、直播间来自同一个对象，行内永不错位。
+     */
+    suspend fun recentEvents(userId: Long, limit: Int = 30): List<UserEvent> {
+        val out = ArrayList<UserEvent>()
+        // 多取几页再排序截断，保证「最近 N 条」真的是最近 N 条，而不是最近几场里的 N 条
+        var page = 1
+        while (page <= 3) {
+            val text = getText("$BASE/api/v3/users/$userId/history?page=$page&pageSize=10&hideOnlyEnter=true")
+            val root = JSONObject(text)
+            ensureOk(root, "互动记录")
+            val data = root.optJSONObject("data") ?: break
+            val items = data.optJSONArray("items") ?: break
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                val channelName = item.optJSONObject("channel")?.text("uName").orEmpty()
+                val liveTitle = item.optJSONObject("live")?.text("title").orEmpty()
+                val records = item.optJSONObject("danmakus")?.optJSONArray("records") ?: continue
+                for (j in 0 until records.length()) {
+                    val r = records.optJSONObject(j) ?: continue
+                    val type = r.optInt("type", -1)
+                    // 进场（4）不算实质互动，混进来会把列表灌成一串「进场」
+                    if (type == 4) continue
+                    val desc = eventText(type, r.optJSONObject("payload"))
+                    out.add(UserEvent(r.optLong("ts", 0L), type, desc, channelName, liveTitle))
+                }
+            }
+            if (!data.optBoolean("hasMore", false)) break
+            page++
+        }
+        return out.sortedByDescending { it.ts }.take(limit)
+    }
+
+    /** 把一条记录的 payload 整理成人话；空文本也保留条目，由界面显示占位符 */
+    private fun eventText(type: Int, p: JSONObject?): String = when (type) {
+        0 -> p?.text("rawText").orEmpty()
+        1 -> {
+            val name = p?.text("name").orEmpty().ifBlank { "礼物" }
+            val count = p?.optInt("count", 0) ?: 0
+            val price = p?.optDouble("price", 0.0) ?: 0.0
+            buildString {
+                append(name)
+                if (count > 1) append(" ×").append(count)
+                if (price > 0) {
+                    append(" ¥")
+                    append(if (price == price.toLong().toDouble()) price.toLong().toString() else "%.2f".format(price))
+                }
+            }
+        }
+        3 -> p?.text("text").orEmpty().ifBlank { p?.text("rawText").orEmpty() }
+        else -> p?.text("rawText").orEmpty().ifBlank { p?.text("text").orEmpty() }
+    }
+
+    /**
      * 分析某个用户在直播间的互动行为。
      *
      * 服务端是异步任务：创建 → 轮询状态 → 取结果（MessagePack）。
@@ -461,6 +519,19 @@ data class Payment(
 )
 
 data class AreaItem(val name: String, val count: Int)
+
+/**
+ * 单条互动记录。四个字段来自同一条服务端记录，排序时整条一起动，
+ * 时间与内容、直播间永不错位。
+ */
+data class UserEvent(
+    val ts: Long,
+    /** DanmakuType 枚举值：0 弹幕 / 1 礼物 / 2 上舰 / 3 醒目留言（4 进场已被过滤） */
+    val type: Int,
+    val text: String,
+    val channelName: String,
+    val liveTitle: String
+)
 
 data class UserAnalysis(
     val names: List<String>,

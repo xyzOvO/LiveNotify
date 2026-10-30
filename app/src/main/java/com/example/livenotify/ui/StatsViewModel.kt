@@ -10,6 +10,7 @@ import com.example.livenotify.bili.CareerStats
 import com.example.livenotify.bili.ChannelStats
 import com.example.livenotify.bili.TrendMonth
 import com.example.livenotify.bili.UserAnalysis
+import com.example.livenotify.bili.UserEvent
 import com.example.livenotify.data.StreamerEntity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -122,6 +123,8 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun analyze(userId: Long, days: Int) {
         if (userId <= 0L) return
+        // 逐条互动记录是轻查询，顺手带上；失败不影响分析主流程
+        loadRecent(userId)
         val key = "$userId:$days"
         if (cachedKey == key && cachedData != null) {
             val (cf, ct) = cachedRange ?: rangeOf(days)
@@ -159,6 +162,43 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
         cachedData = null
         cachedRange = null
         _analysis.value = AnalysisUi.Idle
+        _recent.value = RecentUi.Idle
+    }
+
+    // ── 最近的互动（逐条记录，按时间倒序） ──────────────────────────
+    sealed interface RecentUi {
+        data object Idle : RecentUi
+        data object Loading : RecentUi
+        data class Done(val userId: Long, val events: List<UserEvent>) : RecentUi
+        data class Failed(val message: String) : RecentUi
+    }
+
+    private val _recent = MutableStateFlow<RecentUi>(RecentUi.Idle)
+    val recent: StateFlow<RecentUi> = _recent
+
+    private var recentJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 拉取该用户最近的互动记录。
+     *
+     * 与分析任务独立：分析要扫历史场次可能失败，而逐条记录是轻查询，
+     * 两边互不拖累。结果按 ts 倒序（最近在前），同一时刻的字段来自同一条
+     * 服务端记录，不会串行错位。
+     */
+    fun loadRecent(userId: Long) {
+        if (userId <= 0L) return
+        recentJob?.cancel()
+        _recent.value = RecentUi.Loading
+        recentJob = viewModelScope.launch {
+            try {
+                val events = BiliStatsApi.recentEvents(userId)
+                _recent.value = RecentUi.Done(userId, events)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _recent.value = RecentUi.Failed(t.userMessage())
+            }
+        }
     }
 
     /**

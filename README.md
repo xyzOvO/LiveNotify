@@ -324,7 +324,7 @@ app/src/main/java/com/example/livenotify/
 
 **粉丝走势**：粉丝总数历史曲线、月度互动观众 / 新观众 / 回访 / 付费人数 / 上舰数 / 打赏金额、生涯统计（场次、活跃天数、总时长、弹幕总量、总收入）。
 
-**互动事件**：输入任意 B 站 UID，统计该用户在各直播间的发言量、打赏、活跃天数、事件类型分布、常去直播间排行、周×小时活跃热力、常用词。
+**互动事件**：输入任意 B 站 UID，统计该用户在各直播间的发言量、打赏、活跃天数、事件类型分布、常去直播间排行、周×小时活跃热力、常用词。另附**最近的互动**清单——逐条列出该用户最近的弹幕 / 礼物 / 上舰 / 醒目留言，按时间倒序（最近在前），每条标出发生时间与所在直播间。
 
 数据来自 [danmakus.com](https://danmakus.com/) 的公开统计接口（社区长期采集 B 站直播弹幕后聚合），**不是 B 站官方数据**，也不需要登录任何账号：
 
@@ -334,6 +334,7 @@ app/src/main/java/com/example/livenotify/
 | 月度观众趋势 | `GET /api/v2/channel/audience-trend?uId=` |
 | 生涯统计 | `GET /api/v2/wiki/channel/{uid}/career` |
 | 用户互动分析 | `POST /api/v3/user-analysis-jobs` → 轮询 → `/result`（MessagePack） |
+| 最近的互动（逐条记录） | `GET /api/v3/users/{userId}/history`（按场次返回该用户的弹幕/打赏记录） |
 
 几个必须说清的点：
 
