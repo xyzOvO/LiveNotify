@@ -21,7 +21,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.util.Calendar
 
 /**
  * B 站数据页的状态。
@@ -94,7 +93,12 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
     // ── 用户互动事件分析 ────────────────────────────────────────────
     sealed interface AnalysisUi {
         data object Idle : AnalysisUi
-        data class Running(val percent: Int, val message: String, val rangeDays: Int) : AnalysisUi
+        data class Running(
+            val userId: Long,
+            val percent: Int,
+            val message: String,
+            val rangeDays: Int
+        ) : AnalysisUi
         data class Done(
             val userId: Long,
             val rangeDays: Int,
@@ -104,7 +108,11 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
             val toMs: Long
         ) : AnalysisUi
 
-        data class Failed(val message: String, val rangeDays: Int) : AnalysisUi
+        data class Failed(
+            val userId: Long,
+            val message: String,
+            val rangeDays: Int
+        ) : AnalysisUi
     }
 
     private val _analysis = MutableStateFlow<AnalysisUi>(AnalysisUi.Idle)
@@ -120,24 +128,27 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 分析某用户近 [days] 天的互动记录。
      * 服务端按 uid 扫历史场次，属于重查询，必须由用户显式触发。
+     *
+     * [force] 为 true 时忽略缓存重新查询——「重新分析」按钮必须真的重新拉取，
+     * 否则用户点了一年也还是那份旧结果。
      */
-    fun analyze(userId: Long, days: Int) {
+    fun analyze(userId: Long, days: Int, force: Boolean = false) {
         if (userId <= 0L) return
         // 逐条互动记录是轻查询，顺手带上；失败不影响分析主流程
         loadRecent(userId)
         val key = "$userId:$days"
-        if (cachedKey == key && cachedData != null) {
+        if (!force && cachedKey == key && cachedData != null) {
             val (cf, ct) = cachedRange ?: rangeOf(days)
             _analysis.value = AnalysisUi.Done(userId, days, cachedData!!, cf, ct)
             return
         }
         analysisJob?.cancel()
-        _analysis.value = AnalysisUi.Running(0, "创建分析任务…", days)
+        _analysis.value = AnalysisUi.Running(userId, 0, "创建分析任务…", days)
         analysisJob = viewModelScope.launch {
             try {
                 val (from, to) = rangeOf(days)
                 val data = BiliStatsApi.analyze(userId, from, to) { p, msg ->
-                    _analysis.value = AnalysisUi.Running(p, msg, days)
+                    _analysis.value = AnalysisUi.Running(userId, p, msg, days)
                 }
                 cachedKey = key
                 cachedData = data
@@ -146,7 +157,7 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                _analysis.value = AnalysisUi.Failed(t.userMessage(), days)
+                _analysis.value = AnalysisUi.Failed(userId, t.userMessage(), days)
             }
         }
     }
@@ -168,9 +179,9 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
     // ── 最近的互动（逐条记录，按时间倒序） ──────────────────────────
     sealed interface RecentUi {
         data object Idle : RecentUi
-        data object Loading : RecentUi
+        data class Loading(val userId: Long) : RecentUi
         data class Done(val userId: Long, val events: List<UserEvent>) : RecentUi
-        data class Failed(val message: String) : RecentUi
+        data class Failed(val userId: Long, val message: String) : RecentUi
     }
 
     private val _recent = MutableStateFlow<RecentUi>(RecentUi.Idle)
@@ -188,7 +199,7 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
     fun loadRecent(userId: Long) {
         if (userId <= 0L) return
         recentJob?.cancel()
-        _recent.value = RecentUi.Loading
+        _recent.value = RecentUi.Loading(userId)
         recentJob = viewModelScope.launch {
             try {
                 val events = BiliStatsApi.recentEvents(userId)
@@ -196,7 +207,7 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                _recent.value = RecentUi.Failed(t.userMessage())
+                _recent.value = RecentUi.Failed(userId, t.userMessage())
             }
         }
     }
@@ -208,27 +219,25 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
      * 「无效的日期范围」（2020-01-01 起可用）。所以这里用滚动的约 5.7 年窗口，
      * 既覆盖了绝大部分历史，也不会随着时间推移撞上那条边界。
      */
-    private fun rangeOf(days: Int): Pair<Long, Long> {
-        val end = System.currentTimeMillis()
-        if (days <= 0) return (end - ALL_SPAN_MS) to end
-        val cal = Calendar.getInstance().apply {
-            timeInMillis = end
-            add(Calendar.DAY_OF_YEAR, -days)
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        return cal.timeInMillis to end
-    }
-
-    private companion object {
-        /** 「全部」对应的回溯跨度：2100 天 ≈ 5.75 年，稳妥落在服务端可接受的下限之内 */
-        const val ALL_SPAN_MS = 2100L * 24L * 3600L * 1000L
-    }
+    internal fun rangeOf(days: Int): Pair<Long, Long> = analysisRange(days)
 
     private fun Throwable.userMessage(): String = when (this) {
         is BiliApiException -> message ?: "请求失败"
         else -> message?.takeIf { it.isNotBlank() } ?: "网络请求失败，请稍后重试"
     }
+}
+
+/** 分析结果必须与当前输入框里的 UID 和时间范围一致，不能把旧用户的数据挂到新输入下。 */
+internal fun StatsViewModel.AnalysisUi.belongsTo(userId: Long, rangeDays: Int): Boolean = when (this) {
+    StatsViewModel.AnalysisUi.Idle -> true
+    is StatsViewModel.AnalysisUi.Running -> this.userId == userId && this.rangeDays == rangeDays
+    is StatsViewModel.AnalysisUi.Done -> this.userId == userId && this.rangeDays == rangeDays
+    is StatsViewModel.AnalysisUi.Failed -> this.userId == userId && this.rangeDays == rangeDays
+}
+
+internal fun StatsViewModel.RecentUi.belongsTo(userId: Long): Boolean = when (this) {
+    StatsViewModel.RecentUi.Idle -> true
+    is StatsViewModel.RecentUi.Loading -> this.userId == userId
+    is StatsViewModel.RecentUi.Done -> this.userId == userId
+    is StatsViewModel.RecentUi.Failed -> this.userId == userId
 }

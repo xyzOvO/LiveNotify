@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 更新包下载目录：getExternalFilesDir(DIRECTORY_DOWNLOADS) -->
     <external-files-path name="update_apk" path="Download/" />
+    <!-- 外部存储不可用时的退路：filesDir/updates（见 ApkDownloader.INTERNAL_DIR） -->
+    <files-path name="update_apk_internal" path="updates/" />
 </paths>

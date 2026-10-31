@@ -105,11 +105,11 @@ object DouyinParser {
             lastReason = "直播间不存在"
             return Parsed(fallbackRid, "", "", 4, null, 0L, notFound = true)
         }
-        // 落地页在没有数据时退化成一个约 26KB 的空壳：说明这个房间号当前没有直播数据。
-        // 保守按「未开播」处理——宁可漏报，也不能把未知状态当成开播。
+        // 没有 room 锚点就不能证明主播已下播。短空壳可能只是风控、临时故障或页面改版，
+        // 这里必须返回解析失败，让上层保留已知状态；只有房间自身的 status=4 才算未开播。
         if (html.length < 40_000) {
-            lastReason = "未读到直播间数据"
-            return Parsed(fallbackRid, "", "", 4, null, 0L)
+            lastReason = "抖音未返回房间状态，已保留上次检测结果"
+            return null
         }
         lastReason = "抖音页面结构可能已变更（未找到房间数据）"
         return null

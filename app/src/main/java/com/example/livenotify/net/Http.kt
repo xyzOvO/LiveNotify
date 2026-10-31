@@ -4,10 +4,12 @@ import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -16,6 +18,7 @@ import okio.Buffer
 import java.io.IOException
 import java.nio.charset.Charset
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.coroutineContext
 
 /** 简单的按 host 串行节流器：保证同一平台两次请求之间留出间隔，避免被限流。 */
 class RateLimiter(private val minGapMs: Long) {
@@ -67,6 +70,21 @@ object Http {
     }
 
     /**
+     * execute() 是阻塞调用，协程取消不会自动打断它。这里把 Call 和当前协程绑起来：
+     * 停止监控（或退出页面）时立刻 cancel 掉在途请求，而不是让 IO 线程空等到 20 秒超时，
+     * 也避免取消之后拿到的结果被当成「本轮检测成功」继续走通知流程。
+     */
+    private suspend fun <T> Call.runCancellable(block: (Response) -> T): T {
+        val job = coroutineContext[Job]
+        val handle = job?.invokeOnCompletion { if (job.isCancelled) cancel() }
+        try {
+            return execute().use(block)
+        } finally {
+            handle?.dispose()
+        }
+    }
+
+    /**
      * 同步执行（调用方已在 IO 线程）。返回 body 字符串，失败抛 IOException。
      */
     suspend fun get(
@@ -82,7 +100,7 @@ object Http {
             .header("Accept-Language", "zh-CN,zh;q=0.9")
         headers.forEach { (k, v) -> builder.header(k, v) }
         if (!cookie.isNullOrBlank()) builder.header("Cookie", cookie)
-        client.newCall(builder.build()).execute().use { resp: Response ->
+        client.newCall(builder.build()).runCancellable { resp: Response ->
             if (!resp.isSuccessful) throw IOException("HTTP ${resp.code} @ $url")
             val body = resp.body ?: throw IOException("空响应 @ $url")
             body.source().use { source ->
@@ -106,7 +124,7 @@ object Http {
             limiter?.pass()
             val req = Request.Builder().url(url).header("User-Agent", ua).build()
             try {
-                client.newCall(req).execute().use { it.request.url.toString() }
+                client.newCall(req).runCancellable { it.request.url.toString() }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {

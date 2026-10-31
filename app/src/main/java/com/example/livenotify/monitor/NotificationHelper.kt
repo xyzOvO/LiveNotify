@@ -9,6 +9,7 @@ import android.media.AudioAttributes
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.example.livenotify.R
@@ -26,6 +27,13 @@ object NotificationHelper {
 
     /** 默认震动节奏：短震—停—短震 */
     private val VIBRATE_PATTERN = longArrayOf(0, 260, 160, 260)
+
+    private const val TAG = "NotificationHelper"
+
+    /** 记录最近一次应用到渠道上的响铃/震动参数，避免无变化时反复删建渠道 */
+    private const val PREFS_ALERT = "notif_alert"
+    private const val KEY_SOUND = "sound"
+    private const val KEY_VIBRATE = "vibrate"
 
     fun createChannels(context: Context, sound: Boolean = true, vibrate: Boolean = true) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -71,8 +79,21 @@ object NotificationHelper {
      * 修改开播提醒的响铃 / 震动。
      * Android 8.0 起声音与震动由**渠道**决定，NotificationCompat.Builder 上的设置会被忽略，
      * 所以只能删掉渠道再按新参数重建（代价：会重置用户在该渠道上的手动调整）。
+     *
+     * 因此只在「用户真的改了偏好」时才重建：把最近一次应用的参数记在本地，
+     * 参数没变就直接返回。否则每次冷启动都删建渠道，会把用户的渠道设置和已经弹出的通知清空。
      */
     fun applyAlertSettings(context: Context, sound: Boolean, vibrate: Boolean) {
+        val prefs = context.getSharedPreferences(PREFS_ALERT, Context.MODE_PRIVATE)
+        val known = prefs.contains(KEY_SOUND) && prefs.contains(KEY_VIBRATE)
+        if (known &&
+            prefs.getBoolean(KEY_SOUND, true) == sound &&
+            prefs.getBoolean(KEY_VIBRATE, true) == vibrate
+        ) {
+            Log.d(TAG, "live channel unchanged (sound=$sound, vibrate=$vibrate), skip rebuild")
+            return
+        }
+
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.deleteNotificationChannel(CHANNEL_LIVE)
         nm.createNotificationChannel(
@@ -85,6 +106,8 @@ object NotificationHelper {
                 applyAlert(this, sound, vibrate)
             }
         )
+        prefs.edit().putBoolean(KEY_SOUND, sound).putBoolean(KEY_VIBRATE, vibrate).apply()
+        Log.i(TAG, "rebuild live channel: sound=$sound vibrate=$vibrate")
     }
 
     private fun applyAlert(ch: NotificationChannel, sound: Boolean, vibrate: Boolean) {
@@ -103,8 +126,23 @@ object NotificationHelper {
         ch.vibrationPattern = if (vibrate) VIBRATE_PATTERN else null
     }
 
+    /**
+     * 能否真正弹出开播提醒。
+     *
+     * 除了应用级通知总开关，还要看「开播提醒」这个渠道本身：
+     * 用户可以在系统设置里单独关掉某个渠道，此时 notify() 不报错、也不抛异常，
+     * 但通知不会出现。只看应用级开关会把这种情况误记成「已通知」而不再重试。
+     */
     fun canNotify(context: Context): Boolean =
-        NotificationManagerCompat.from(context).areNotificationsEnabled()
+        NotificationManagerCompat.from(context).areNotificationsEnabled() &&
+            isChannelEnabled(context, CHANNEL_LIVE)
+
+    private fun isChannelEnabled(context: Context, channelId: String): Boolean {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return true
+        val ch = nm.getNotificationChannel(channelId) ?: return true
+        return ch.importance != NotificationManager.IMPORTANCE_NONE
+    }
 
     /** 跳转到系统通知设置（应用级），供权限缺失提示条使用 */
     fun openNotificationSettings(context: Context) {

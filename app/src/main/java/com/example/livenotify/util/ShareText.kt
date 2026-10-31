@@ -30,8 +30,10 @@ object ShareText {
         // 2. 无协议域名形式：live.douyin.com/629458933、space.bilibili.com/672328094
         Regex("""(?:[A-Za-z0-9-]+\.)+(?:com|cn|tv|net)(?:/[A-Za-z0-9_./-]+)?""").find(s)?.let { return it.value }
 
-        // 3. 被中文夹住的房间号 / web_rid：取最长数字串（3~12 位，与各平台 resolve 上限一致）
-        Regex("""\d{3,12}""").findAll(s).maxByOrNull { it.value.length }?.let { return it.value }
+        // 3. 被中文夹住的房间号 / web_rid：取最长数字串。
+        //    上限必须覆盖抖音 web_rid 的 19~20 位雪花 ID，否则「房间号 7701909481856633636」
+        //    会被截成 12 位，既查不到房间，还可能被 B 站规则抢走。
+        Regex("""\d{3,20}""").findAll(s).maxByOrNull { it.value.length }?.let { return it.value }
 
         return s
     }

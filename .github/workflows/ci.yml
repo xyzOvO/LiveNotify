@@ -66,20 +66,27 @@ jobs:
         if: env.EXTRA_LINES != ''
         run: python3 tools/inject_extra.py
 
-      # 可选：在仓库 Settings → Secrets 配置以下四项后，CI 出正式签名包；
-      # 不配置则自动回退 debug 签名（任何人都能安装，但与正式签名包不互通）。
+      # 正式签名必需：没有密钥时 Gradle 会回退 debug 签名，而 GitHub runner 每次的 debug 密钥
+      # 都是临时生成的 —— 两次 Release 的签名不同，用户无法覆盖升级（只能卸载重装，数据全丢）。
+      # 所以这里直接失败，而不是产出一个「能装但不能升级」的包。
       #   KEYSTORE_BASE64   : base64 -w0 keystore/livenotify.jks 的输出
       #   KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
       - name: 解码签名密钥
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        if: env.KEYSTORE_BASE64 != ''
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::缺少签名 Secrets（KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD）。"
+            echo "::error::缺省时会回退到 runner 临时 debug 签名，产出的 Release 无法覆盖安装上一版，已中止。"
+            exit 1
+          fi
           mkdir -p keystore
           echo "$KEYSTORE_BASE64" | base64 -d > keystore/livenotify.jks
           printf 'storeFile=keystore/livenotify.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
-            "${{ secrets.KEYSTORE_PASSWORD }}" "${{ secrets.KEY_ALIAS }}" "${{ secrets.KEY_PASSWORD }}" \
-            > keystore.properties
+            "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
 
       - name: 构建 Release APK
         run: ./gradlew assembleRelease

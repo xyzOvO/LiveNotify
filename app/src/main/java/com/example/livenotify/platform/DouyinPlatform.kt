@@ -2,6 +2,7 @@ package com.example.livenotify.platform
 
 import com.example.livenotify.net.Http
 import com.example.livenotify.net.RateLimiter
+import kotlinx.coroutines.CancellationException
 
 /**
  * 抖音：官方开放平台未提供个人可用的「直播间状态」查询接口
@@ -109,6 +110,8 @@ object DouyinPlatform : LivePlatform {
             DouyinParser.findString(html, "web_rid")
                 ?: DouyinParser.findString(html, "room_id")
                 ?: DouyinParser.findString(html, "roomId")
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             null
         }
@@ -164,6 +167,8 @@ object DouyinPlatform : LivePlatform {
                 limiter,
                 Http.UA_MOBILE
             )
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             val msg = t.message ?: ""
             if (msg.contains("404")) return DouyinParser.Parsed(rid, "", "", STATUS_OFF, null, 0L, notFound = true)

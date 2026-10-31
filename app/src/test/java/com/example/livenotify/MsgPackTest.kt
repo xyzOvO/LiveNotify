@@ -77,6 +77,24 @@ class MsgPackTest {
     }
 
     @Test
+    fun `ext 类型整体跳过 type 字节，后续字段不错位`() {
+        // [fixext1(type=1,data=2), 3]：ext 是 type(1)+payload，只跳过 payload 会把 type 当成下一个元素
+        val list = MsgPack.decode(hex("92d4010203")) as List<*>
+        assertEquals(2, list.size)
+        assertEquals(null, list[0])
+        assertEquals(3L, list[1])
+    }
+
+    @Test
+    fun `长度为 0 的 ext8 也要吃掉类型字节`() {
+        // {"a": ext8(len=0,type=5), "b": 7}
+        val map = MsgPack.decode(hex("82a161c70005a16207")).asMap()!!
+        assertEquals(2, map.size)
+        assertEquals(null, map["a"])
+        assertEquals(7L, map["b"])
+    }
+
+    @Test
     fun `解析互动分析结果的各字段`() {
         val root = MsgPack.decode(hex(ANALYSIS_HEX)).asMap()!!
         val r = BiliStatsApi.parseAnalysis(root)

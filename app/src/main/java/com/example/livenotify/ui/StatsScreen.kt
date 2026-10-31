@@ -508,6 +508,10 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
     val cs = MaterialTheme.colorScheme
     var uidText by rememberSaveable { mutableStateOf(if (defaultUid > 0) defaultUid.toString() else "") }
     var rangeDays by rememberSaveable { mutableIntStateOf(90) }
+    val currentUid = uidText.toLongOrNull() ?: 0L
+    // 输入或时间范围变化后，旧请求/旧结果不能再冒充当前查询对象。
+    val visibleAnalysis = analysis.takeIf { it.belongsTo(currentUid, rangeDays) }
+    val visibleRecent = recent.takeIf { it.belongsTo(currentUid) }
 
     LaunchedEffect(defaultUid) {
         if (defaultUid > 0L && uidText.isBlank()) uidText = defaultUid.toString()
@@ -543,7 +547,7 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                when (val a = analysis) {
+                when (val a = visibleAnalysis) {
                     is StatsViewModel.AnalysisUi.Running -> {
                         Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -587,10 +591,13 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
                             enabled = (uidText.toLongOrNull() ?: 0L) > 0L,
                             onClick = {
                                 val uid = uidText.toLongOrNull() ?: 0L
-                                if (uid > 0L) vm.analyze(uid, rangeDays)
+                                // 已有结果时按钮是「重新分析」，必须绕过缓存重新请求
+                                if (uid > 0L) {
+                                    vm.analyze(uid, rangeDays, force = visibleAnalysis is StatsViewModel.AnalysisUi.Done)
+                                }
                             }
                         ) {
-                            Text(if (analysis is StatsViewModel.AnalysisUi.Done) "重新分析" else "开始分析")
+                            Text(if (visibleAnalysis is StatsViewModel.AnalysisUi.Done) "重新分析" else "开始分析")
                         }
                     }
                 }
@@ -604,7 +611,7 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
         }
 
         // 最近的互动：轻查询，独立于分析任务渲染；分析失败也照样能看
-        when (val r = recent) {
+        when (val r = visibleRecent) {
             is StatsViewModel.RecentUi.Loading -> item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
@@ -624,7 +631,7 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
             else -> {}
         }
 
-        (analysis as? StatsViewModel.AnalysisUi.Done)?.let { done ->
+        (visibleAnalysis as? StatsViewModel.AnalysisUi.Done)?.let { done ->
             val d = done.data
             if (d.summary.messages == 0 && d.summary.interactions == 0) {
                 item {

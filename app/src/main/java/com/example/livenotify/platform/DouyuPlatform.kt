@@ -2,6 +2,7 @@ package com.example.livenotify.platform
 
 import com.example.livenotify.net.Http
 import com.example.livenotify.net.RateLimiter
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -57,6 +58,8 @@ object DouyuPlatform : LivePlatform {
         // 兜底：页面里常见 "room_id":12345 或 rid=12345
         val html = try {
             Http.get(s, mapOf("Referer" to "https://www.douyu.com/"), null, limiter)
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             null
         } ?: return null
@@ -83,6 +86,8 @@ object DouyuPlatform : LivePlatform {
                 null,
                 limiter
             )
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             return Outcome.Failed(rid, t.message ?: "网络异常", retryable = true)
         }

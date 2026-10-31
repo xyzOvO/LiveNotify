@@ -2,6 +2,7 @@ package com.example.livenotify.platform
 
 import com.example.livenotify.net.Http
 import com.example.livenotify.net.RateLimiter
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 
 /**
@@ -59,6 +60,8 @@ object BilibiliPlatform : LivePlatform {
             val data = root.optJSONObject("data") ?: return null
             val uid = data.optLong("uid", 0L)
             if (uid == 0L) null else uid.toString()
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             null
         }
@@ -129,6 +132,9 @@ object BilibiliPlatform : LivePlatform {
                         )
                     )
                 }
+            } catch (ce: CancellationException) {
+                // 停止监控时不能把取消当成「网络失败」继续跑完这一批
+                throw ce
             } catch (t: Throwable) {
                 chunk.forEach { out.add(Outcome.Failed(it, t.message ?: "网络异常", true)) }
             }

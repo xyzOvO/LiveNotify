@@ -5,7 +5,6 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -13,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import java.io.IOException
 
 private val Context.settingsStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
@@ -59,8 +59,11 @@ class SettingsRepository(private val context: Context) {
         val AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")
     }
 
+    /** 最近一次成功读到的设置：读盘失败时沿用它，而不是退回「默认值」 */
+    @Volatile
+    private var lastKnown: Settings? = null
+
     val settings: Flow<Settings> = context.settingsStore.data
-        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
         .map { p ->
             Settings(
                 pollIntervalSec = p[Keys.INTERVAL] ?: 120,
@@ -79,6 +82,13 @@ class SettingsRepository(private val context: Context) {
                 hideMonitorNotification = p[Keys.HIDE_MONITOR_NOTIFICATION] ?: false,
                 autoUpdateCheck = p[Keys.AUTO_UPDATE_CHECK] ?: true
             )
+        }
+        .onEach { lastKnown = it }
+        .catch { e ->
+            if (e !is IOException) throw e
+            // 读盘失败时退回上一次成功读到的值。绝不能退回默认值：默认 monitorEnabled=true，
+            // 会让用户明明关掉的监控被重新拉起。
+            emit(lastKnown ?: Settings())
         }
 
     suspend fun current(): Settings = settings.first()

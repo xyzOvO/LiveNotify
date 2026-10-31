@@ -119,6 +119,8 @@ fun MainScreen(
     val refreshing by vm.refreshing.collectAsStateWithLifecycle()
     val egg by vm.egg.collectAsStateWithLifecycle()
     val updateState by vm.update.collectAsStateWithLifecycle()
+    // 界面显示的是「服务真的在跑」，不是「设置里开着」
+    val monitorRunning by vm.monitorRunning.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -134,6 +136,8 @@ fun MainScreen(
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 canNotify = NotificationHelper.canNotify(context)
+                // 服务被系统/ROM 回收后回到前台，顺手补一次启动
+                vm.ensureMonitorRunning()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -191,7 +195,7 @@ fun MainScreen(
                     HeroHeader(
                         total = list.size,
                         liveCount = list.count { it.isLive },
-                        monitoring = settings.monitorEnabled,
+                        monitoring = settings.monitorEnabled && monitorRunning,
                         refreshing = refreshing,
                         onRefresh = { vm.checkNow() },
                         onOpenSettings = onOpenSettings
@@ -213,6 +217,17 @@ fun MainScreen(
                             text = "通知权限未开启，开播提醒送不到你手机上。",
                             action = "去开启",
                             onAction = { NotificationHelper.openNotificationSettings(context) }
+                        )
+                    }
+                }
+
+                // 设置里开着、服务却没跑：以前这种情况界面仍显示「监控中」，属于静默失败
+                if (settings.monitorEnabled && !monitorRunning) {
+                    item {
+                        NoticeCard(
+                            text = "后台检测没有在运行，可能收不到开播提醒（部分系统会拦截后台启动）。",
+                            action = "重启",
+                            onAction = { vm.setMonitorEnabled(true) }
                         )
                     }
                 }

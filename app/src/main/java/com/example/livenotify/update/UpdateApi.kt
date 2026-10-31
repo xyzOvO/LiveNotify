@@ -33,6 +33,9 @@ object UpdateApi {
 
     private val limiter = RateLimiter(5_000L)
 
+    /** CI 产出的固定附件名，优先选它 */
+    private const val PREFERRED_ASSET = "app-release.apk"
+
     /**
      * 取最新正式发布。返回 null 表示请求失败、被限流，或该发布下没有 APK 附件。
      * 只认形如 v1.2.3 的 tag，其余一律当作「没有新版本」，避免误报。
@@ -110,15 +113,22 @@ object UpdateApi {
         )
     }
 
-    /** 取 assets 里第一个 .apk 附件 */
+    /**
+     * 从 assets 里挑安装包：优先固定名字 `app-release.apk`（CI 产物名），
+     * 再退回任意 .apk。Release 里同时挂了多个包（如历史版本、调试包）时，
+     * 「第一个 .apk」并不稳定，可能装到别的包上。
+     */
     private fun pickApk(assets: JSONArray): JSONObject? {
+        var fallback: JSONObject? = null
         for (i in 0 until assets.length()) {
             val a = assets.optJSONObject(i) ?: continue
             val n = a.text("name")
             if (!n.endsWith(".apk", ignoreCase = true)) continue
-            if (a.text("browser_download_url").isNotBlank()) return a
+            if (a.text("browser_download_url").isBlank()) continue
+            if (n.equals(PREFERRED_ASSET, ignoreCase = true)) return a
+            if (fallback == null) fallback = a
         }
-        return null
+        return fallback
     }
 }
 

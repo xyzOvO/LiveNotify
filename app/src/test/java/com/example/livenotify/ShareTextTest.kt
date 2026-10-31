@@ -38,6 +38,11 @@ class ShareTextTest {
         assertEquals("71415", ShareText.extract("斗鱼房间71415欢迎你"))
     }
 
+    @Test fun `抖音19位webrid不被截断`() {
+        // 上限曾写成 12 位，长房间号会被截成 "770190948185"：查不到房间，还可能被 B 站规则抢走
+        assertEquals("7701909481856633636", ShareText.extract("抖音房间号 7701909481856633636 快来看"))
+    }
+
     @Test fun `全角标点截断URL`() {
         // 句号属于全角区，不能被吸进 URL
         assertEquals(

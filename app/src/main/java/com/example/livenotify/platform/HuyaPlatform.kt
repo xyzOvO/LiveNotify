@@ -2,6 +2,7 @@ package com.example.livenotify.platform
 
 import com.example.livenotify.net.Http
 import com.example.livenotify.net.RateLimiter
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 
 /**
@@ -51,6 +52,8 @@ object HuyaPlatform : LivePlatform {
         // 兜底：页面里的 roomId / lProfileRoom
         val html = try {
             Http.get(s, mapOf("Referer" to "https://www.huya.com/"), null, limiter)
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             null
         } ?: return null
@@ -78,6 +81,8 @@ object HuyaPlatform : LivePlatform {
                 null,
                 limiter
             )
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             return Outcome.Failed(rid, t.message ?: "网络异常", retryable = true)
         }

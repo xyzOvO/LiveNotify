@@ -12,15 +12,17 @@ import com.example.livenotify.platform.LiveState
 import com.example.livenotify.platform.Outcome
 import com.example.livenotify.platform.PlatformRegistry
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 
 /**
  * 检测引擎：一次轮询 = 按平台分组 → 批量拉取 → 状态对比 → 去重 → 推送 → 落库。
  *
  * 防误报 / 防重复推送的三道闸：
- *   1. 状态跳变：必须「上次未开播 → 本次开播」才可能推送；
+ *   1. 状态跳变：上次未开播，或同一主播换了一个场次 key，才可能推送；
  *   2. 连续确认：连续 [Settings.confirmTimes] 次检测到开播（抖动过滤）；
  *   3. 场次去重 + 冷却：同一场次（liveStartAt 相同）只推一次，且受冷却时间约束。
  * 网络异常或解析失败时**不改动已知状态**，只累计错误，避免把「没查到」当成「没开播」。
@@ -129,18 +131,19 @@ class MonitorEngine(
                     is Outcome.Ok -> {
                         val snap = o.snapshot
                         val nowLive = snap.state == LiveState.LIVE
-                        val streak = if (nowLive) s.liveStreak + 1 else 0
                         val sessionKey = snap.liveStartAt
+                        val transition = evaluateLiveTransition(
+                            wasLive = s.isLive,
+                            previousStreak = s.liveStreak,
+                            previousSessionKey = s.liveStartAt,
+                            sessionKey = sessionKey,
+                            lastNotifiedLiveStart = s.lastNotifiedLiveStart,
+                            nowLive = nowLive,
+                            confirmTimes = cfg.confirmTimes
+                        )
                         val cooldownOk = now - s.lastNotifiedAt >= cfg.cooldownMin * 60_000L
-                        val newSession = sessionKey <= 0L || sessionKey != s.lastNotifiedLiveStart
-
-                        // 未达到确认次数前保持 isLive=false，否则第二轮会被 !s.isLive 永久挡住。
-                        val confirmedLive = nowLive && (s.isLive || streak >= cfg.confirmTimes)
-                        val shouldNotify = nowLive &&
-                            !s.isLive &&
-                            streak >= cfg.confirmTimes &&
+                        val shouldNotify = transition.notificationCandidate &&
                             cooldownOk &&
-                            newSession &&
                             !(quiet && cfg.quietNoNotify)
 
                         var updated = s.copy(
@@ -151,8 +154,8 @@ class MonitorEngine(
                             note = snap.note?.takeIf { it.isNotBlank() } ?: "",
                             roomUrl = snap.roomUrl,
                             displayId = snap.displayId,
-                            isLive = confirmedLive,
-                            liveStreak = streak,
+                            isLive = transition.confirmedLive,
+                            liveStreak = transition.streak,
                             // 本场开播时刻只在直播中有值；未开播清零
                             liveStartAt = if (nowLive) sessionKey else 0L,
                             // 「上次开播」永久保留：斗鱼接口在未开播时仍返回上一场 start_time
@@ -171,6 +174,14 @@ class MonitorEngine(
                                 lastNotifiedLiveStart = sessionKey
                             )
                             notified++
+                            // 通知已经送达，去重标记必须立刻落库；不能等整轮结束，
+                            // 否则进程在后续主播处理时被杀，会在下一轮重复提醒同一场。
+                            // 用 NonCancellable 兜住「通知已发、服务刚好被停止」这个取消窗口。
+                            try {
+                                withContext(NonCancellable) { dao.update(updated) }
+                            } catch (t: Throwable) {
+                                Log.e(TAG, "persist notified state failed for id=${s.id}", t)
+                            }
                         }
                         updates.add(updated)
                     }

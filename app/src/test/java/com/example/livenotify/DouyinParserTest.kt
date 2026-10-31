@@ -4,6 +4,7 @@ import com.example.livenotify.platform.DouyinParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -52,13 +53,12 @@ class DouyinParserTest {
         assertEquals("测试主播", p!!.nickname)
     }
 
-    @Test fun `空壳页按未开播处理，不误报开播`() {
-        // 房间号无效 / 当前没有数据时，落地页退化成一个不含房间数据的短壳页
+    @Test fun `空壳页不猜未开播`() {
+        // 没有 room 数据只代表本次没读到状态，不能改写成「已下播」
         val shell = "<html><head><title>抖音</title></head><body><div id=\"root\"></div></body></html>"
         val p = DouyinParser.parseReflow(shell, "629458933")
-        assertNotNull(p)
-        assertEquals(4, p!!.status)
-        assertEquals("", p.nickname)
+        assertNull(p)
+        assertTrue(DouyinParser.lastReason.contains("未返回房间状态"))
     }
 
     @Test fun `空响应返回 null`() {

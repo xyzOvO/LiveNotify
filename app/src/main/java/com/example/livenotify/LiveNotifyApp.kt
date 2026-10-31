@@ -18,7 +18,8 @@ class LiveNotifyApp : Application() {
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 val s = Graph.settings.current()
-                // 按保存的响铃/震动偏好重建开播提醒渠道（渠道参数只能重建才生效）
+                // 参数没变时 applyAlertSettings 直接返回；只有用户改过响铃/震动才会重建渠道，
+                // 因此不会像以前那样每次冷启动都清掉已弹通知和用户的渠道设置
                 NotificationHelper.applyAlertSettings(this@LiveNotifyApp, s.notifySound, s.notifyVibrate)
                 if (s.monitorEnabled) {
                     MonitorService.start(this@LiveNotifyApp)

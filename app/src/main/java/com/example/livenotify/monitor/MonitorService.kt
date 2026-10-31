@@ -20,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -38,12 +39,15 @@ class MonitorService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var loopJob: kotlinx.coroutines.Job? = null
 
+    /** 上次成功读到的监控开关；设置读盘失败时沿用它，而不是默认「已开启」 */
+    private var lastEnabled = true
+
     private val engine: MonitorEngine by lazy { com.example.livenotify.Graph.engine }
     private val settings by lazy { com.example.livenotify.Graph.settings }
 
     override fun onCreate() {
         super.onCreate()
-        isRunning = true
+        running.value = true
         val n = NotificationHelper.monitorNotification(this, "准备中…", 0, false)
         // Android 14 起 startForeground 必须声明类型；用 ServiceCompat 兼容低版本
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -78,9 +82,13 @@ class MonitorService : Service() {
             while (isActive) {
                 try {
                     val enabled = try {
-                        settings.current().monitorEnabled
+                        settings.current().monitorEnabled.also { lastEnabled = it }
+                    } catch (ce: CancellationException) {
+                        throw ce
                     } catch (t: Throwable) {
-                        true
+                        // 读不到设置时沿用上一次的判断：不能因为一次读盘失败就把用户关掉的监控重新拉起
+                        Log.w(TAG, "read settings failed, keep last enabled=$lastEnabled", t)
+                        lastEnabled
                     }
                     if (!enabled) {
                         stopSelf()
@@ -125,6 +133,8 @@ class MonitorService : Service() {
 
     private suspend fun currentCount(): Int = try {
         com.example.livenotify.Graph.db.streamerDao().listEnabled().size
+    } catch (ce: CancellationException) {
+        throw ce
     } catch (t: Throwable) {
         0
     }
@@ -142,6 +152,8 @@ class MonitorService : Service() {
         if (!granted) return
         val hidden = try {
             settings.current().hideMonitorNotification
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             false
         }
@@ -155,7 +167,7 @@ class MonitorService : Service() {
     }
 
     override fun onDestroy() {
-        isRunning = false
+        running.value = false
         loopJob?.cancel()
         super.onDestroy()
     }
@@ -204,9 +216,13 @@ class MonitorService : Service() {
         const val ACTION_REFRESH = "com.example.livenotify.ACTION_REFRESH_MONITOR"
 
         /** 服务是否活着。只在它活着时才发刷新指令，避免把已关闭的检测重新拉起 */
-        @Volatile
-        var isRunning: Boolean = false
-            private set
+        val isRunning: Boolean get() = running.value
+
+        /**
+         * 服务的真实运行状态。界面用它显示「监控中 / 未在运行」——
+         * 只看设置项会把「启动失败」也显示成监控中（后台启动在 Android 12+ 是会被拒的）。
+         */
+        val running = MutableStateFlow(false)
 
         /**
          * 让常驻通知里的「共 N 位」立刻跟上列表变化。
@@ -225,13 +241,24 @@ class MonitorService : Service() {
             if (isRunning) refresh(context)
         }
 
-        fun start(context: Context) {
-            runCatching {
-                ContextCompat.startForegroundService(
-                    context,
-                    Intent(context, MonitorService::class.java)
-                )
-            }.onFailure { Log.w(TAG, "start failed: ${it.message}") }
+        /**
+         * 启动常驻服务。返回 false 表示系统拒绝了这次启动（Android 12+ 后台启动前台服务受限、
+         * 或通知权限被关），调用方必须把失败告诉用户，而不是让它静默失败。
+         */
+        fun start(context: Context): Boolean = runCatching {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, MonitorService::class.java)
+            )
+        }.onFailure { Log.w(TAG, "start failed: ${it.message}") }.isSuccess
+
+        /** 确保服务在跑：已在跑只刷新常驻通知，没跑就拉起。返回调用后是否处于运行中 */
+        fun ensureRunning(context: Context): Boolean {
+            if (running.value) {
+                refresh(context)
+                return true
+            }
+            return start(context)
         }
 
         fun stop(context: Context) {

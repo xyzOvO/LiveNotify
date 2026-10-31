@@ -87,8 +87,12 @@ object MsgPack {
             return out
         }
 
-        /** 读掉 ext 的负载（不解析业务语义） */
+        /**
+         * 读掉 ext：格式是 `type(1 字节) + payload(len 字节)`。
+         * 类型字节必须一起消费，否则后续字段整体错位（len=0 的 ext 也带类型字节）。
+         */
         private fun skipExt(len: Int): Any? {
+            i8()                    // ext type，业务不需要具体值，读掉即可
             if (len > 0) bin(len)
             return null
         }

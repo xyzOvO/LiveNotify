@@ -25,9 +25,17 @@ object ApkDownloader {
 
     private const val PREFIX = "LiveNotify-"
 
-    /** 应用私有外部目录：Android 8+ 免存储权限；卸载 App 时系统一并清掉，不留垃圾 */
+    /** 外部存储不可用时的内部下载目录，必须与 res/xml/file_paths.xml 的 files-path 一致 */
+    private const val INTERNAL_DIR = "updates"
+
+    /**
+     * 应用私有外部目录：Android 8+ 免存储权限；卸载 App 时系统一并清掉，不留垃圾。
+     * 外部存储不可用（挂载异常 / 部分定制 ROM）时退回内部目录——必须放在 file_paths.xml
+     * 声明过的子目录里，否则 FileProvider.getUriForFile 会直接抛异常，安装页打不开。
+     */
     private fun dir(context: Context): File {
-        val d = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+        val d = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: File(context.filesDir, INTERNAL_DIR)
         if (!d.exists()) d.mkdirs()
         return d
     }

@@ -159,7 +159,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setMonitorEnabled(enabled: Boolean) = viewModelScope.launch {
         Graph.settings.setMonitorEnabled(enabled)
-        if (enabled) MonitorService.start(getApplication()) else MonitorService.stop(getApplication())
+        if (!enabled) {
+            MonitorService.stop(getApplication())
+            return@launch
+        }
+        // 启动失败（后台启动受限 / 通知权限被关）必须说出来，否则用户以为在监控
+        if (!MonitorService.start(getApplication())) {
+            _toast.value = "后台检测启动失败：请允许自启动 / 后台运行后重试"
+        }
+    }
+
+    /** 服务的真实运行状态，界面用它显示「监控中」（设置项开着不等于服务在跑） */
+    val monitorRunning: StateFlow<Boolean> = MonitorService.running
+
+    /**
+     * 回到前台时补一次：服务可能被系统或 ROM 回收，界面要反映真实状态，
+     * 设置里开着却没跑就顺手重新拉起。
+     */
+    fun ensureMonitorRunning() {
+        if (!settings.value.monitorEnabled) return
+        if (MonitorService.running.value) return
+        if (!MonitorService.start(getApplication())) {
+            _toast.value = "后台检测启动失败：请允许自启动 / 后台运行"
+        }
     }
 
     /** 立即跑一轮（不依赖服务状态） */
@@ -256,12 +278,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _update.value = UpdateState.Failed("下载失败，请检查网络后重试")
             return@launch
         }
-        if (!ApkInstaller.signatureMatches(getApplication(), file)) {
-            _update.value = UpdateState.Failed(
-                "安装包签名与当前应用不一致，系统会拒绝覆盖安装。" +
-                    "可到 Releases 页手动下载，或卸载本应用后重装（关注列表会丢失）。"
-            )
-            return@launch
+        // 包名 / 签名 / 版本一次校验到位；坏包要删掉，否则下次点「重试」还会复用同一个坏文件
+        when (val checked = ApkInstaller.check(getApplication(), file, info.versionCode)) {
+            is ApkInstaller.ApkCheck.Rejected -> {
+                runCatching { file.delete() }
+                _update.value = UpdateState.Failed(checked.reason)
+                return@launch
+            }
+            is ApkInstaller.ApkCheck.Ok -> Unit
         }
         if (!ApkInstaller.canInstall(getApplication())) {
             ApkInstaller.openInstallPermission(getApplication())
