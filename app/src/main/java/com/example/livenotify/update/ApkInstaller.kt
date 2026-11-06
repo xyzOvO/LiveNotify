@@ -2,11 +2,13 @@ package com.example.livenotify.update
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import java.io.File
 import java.security.MessageDigest
 
@@ -20,6 +22,8 @@ import java.security.MessageDigest
  * 相比让用户自己打开浏览器下载再找文件，省掉了最烦的几步。
  */
 object ApkInstaller {
+
+    private const val TAG = "ApkInstaller"
 
     /** Android 8 起需要用户先授权「允许来自此来源的应用」，否则安装页会直接被拒 */
     fun canInstall(context: Context): Boolean =
@@ -53,8 +57,11 @@ object ApkInstaller {
             return ApkCheck.Rejected("安装包不存在或为空，请重新下载")
         }
 
+        // 两个 flag 一起要：部分 ROM（实测 MIUI V12 / Android 10）拿 GET_SIGNING_CERTIFICATES
+        // 时填不出 signingInfo，签名实际只落在旧的 signatures 字段里。
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
-            PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+            PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
+        else PackageManager.GET_SIGNATURES
         val pm = context.packageManager
 
         val archive = try {
@@ -73,15 +80,17 @@ object ApkInstaller {
             return ApkCheck.Rejected("下载到的不是本应用的安装包（包名 ${archive.packageName}）")
         }
 
-        val incoming = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
-            archive.signingInfo?.apkContentsSigners
-        else archive.signatures
-        val current = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
-            self.signingInfo?.apkContentsSigners
-        else self.signatures
+        val incoming = signersOf(archive)
+        val current = signersOf(self)
 
-        if (incoming.isNullOrEmpty() || current.isNullOrEmpty()) {
-            return ApkCheck.Rejected("安装包或本应用缺少签名信息，已中止安装（可到 Releases 页手动下载）")
+        // 拆成两句，别再让用户对着「安装包或本应用」猜是哪一边的问题
+        if (incoming == null) {
+            Log.w(TAG, "archive signers missing: ${signerDebug(archive)}")
+            return ApkCheck.Rejected("无法读取安装包的签名信息，已中止安装（可到 Releases 页手动下载）")
+        }
+        if (current == null) {
+            Log.w(TAG, "self signers missing: ${signerDebug(self)}")
+            return ApkCheck.Rejected("无法读取本应用的签名信息，已中止安装（可到 Releases 页手动下载）")
         }
         if (!digest(incoming.first().toByteArray()).contentEquals(digest(current.first().toByteArray()))) {
             return ApkCheck.Rejected(
@@ -105,6 +114,27 @@ object ApkInstaller {
         }
 
         return ApkCheck.Ok(newCode)
+    }
+
+    /**
+     * 取签名：先走新 API，取不到就回退旧字段。
+     * Android 9+ 起 signingInfo 是官方入口，但不少 ROM 对「未安装的 APK」
+     * 只填 signatures；只认新字段会把完全正常的正式签名包误判成「缺少签名」。
+     */
+    @Suppress("DEPRECATION")
+    private fun signersOf(info: PackageInfo): Array<Signature>? {
+        val modern = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            info.signingInfo?.apkContentsSigners else null
+        return pickSigners(modern, info.signatures)
+    }
+
+    /** 排查用：把两个字段的命中情况打进 logcat，别把字段访问放到低版本分支里 */
+    @Suppress("DEPRECATION")
+    private fun signerDebug(info: PackageInfo): String {
+        val modern = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            info.signingInfo?.apkContentsSigners?.size ?: -1 else -2
+        val legacy = info.signatures?.size ?: -1
+        return "signingInfo=$modern, signatures=$legacy"
     }
 
     private fun digest(bytes: ByteArray): ByteArray =
@@ -141,3 +171,10 @@ object ApkInstaller {
         return runCatching { context.startActivity(intent) }.isSuccess
     }
 }
+
+/**
+ * 签名来源择一：新字段有值就用新字段，空了才回退旧字段。
+ * 抽成纯函数是为了能在 JVM 单测里锁住择一规则（读取 PackageInfo 的那层依赖 Android，测不了）。
+ */
+internal fun <T> pickSigners(modern: Array<T>?, legacy: Array<T>?): Array<T>? =
+    modern?.takeIf { it.isNotEmpty() } ?: legacy?.takeIf { it.isNotEmpty() }
