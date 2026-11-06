@@ -15,7 +15,9 @@ data class ReleaseInfo(
     val assetName: String,
     val sizeBytes: Long,
     val notes: String,          // Release 说明
-    val publishedAt: String
+    val publishedAt: String,
+    /** GitHub asset 自带的 sha256:<hex>；302 兜底路径拿不到，为 null 时跳过文件校验 */
+    val sha256: String? = null
 )
 
 object UpdateApi {
@@ -90,7 +92,8 @@ object UpdateApi {
             assetName = name,
             sizeBytes = size,
             notes = root.text("body").trim(),
-            publishedAt = root.text("published_at")
+            publishedAt = root.text("published_at"),
+            sha256 = ApkHash.normalizeDigest(apk.text("digest"))
         )
     }
 

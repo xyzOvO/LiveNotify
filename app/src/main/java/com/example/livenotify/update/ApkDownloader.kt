@@ -51,19 +51,34 @@ object ApkDownloader {
         }
     }
 
-    /** 下载 APK；成功返回文件，失败返回 null。onProgress 回调 0~100 */
+    /** 下载结果：把「网络失败」和「文件校验失败」分开，界面才能给对提示 */
+    sealed interface DownloadResult {
+        data class Ok(val file: File) : DownloadResult
+        data class Failed(val reason: String) : DownloadResult
+    }
+
+    private const val HASH_FAIL = "安装包校验未通过（文件可能下载不完整或已被替换），已删除，请重试"
+
+    /**
+     * 下载 APK。expectedSha256 非空时，新下载的包和上次留下的包都要核对文件 hash；
+     * 不符一律删掉——坏包留着会让下次点「重试」继续复用同一个文件。
+     */
     suspend fun download(
         context: Context,
         url: String,
         version: String,
+        expectedSha256: String? = null,
         onProgress: (Int) -> Unit
-    ): File? = withContext(Dispatchers.IO) {
+    ): DownloadResult = withContext(Dispatchers.IO) {
         val finalFile = fileFor(context, version)
 
-        // 上次已经下完（用户可能在系统安装页取消了），直接复用
+        // 上次已经下完（用户可能在系统安装页取消了），校验通过才复用
         if (finalFile.exists() && finalFile.length() > 0) {
-            onProgress(100)
-            return@withContext finalFile
+            if (ApkHash.matches(finalFile, expectedSha256)) {
+                onProgress(100)
+                return@withContext DownloadResult.Ok(finalFile)
+            }
+            finalFile.delete()
         }
 
         val tmp = File(dir(context), "$PREFIX$version.apk.part")
@@ -77,15 +92,19 @@ object ApkDownloader {
         }
         if (!ok) {
             tmp.delete()
-            return@withContext null
+            return@withContext DownloadResult.Failed("下载失败，请检查网络后重试")
+        }
+        if (!ApkHash.matches(tmp, expectedSha256)) {
+            tmp.delete()
+            return@withContext DownloadResult.Failed(HASH_FAIL)
         }
         if (finalFile.exists()) finalFile.delete()
         if (tmp.renameTo(finalFile)) {
             clean(context, keep = finalFile)
-            finalFile
+            DownloadResult.Ok(finalFile)
         } else {
             tmp.delete()
-            null
+            DownloadResult.Failed("下载失败，请检查网络后重试")
         }
     }
 

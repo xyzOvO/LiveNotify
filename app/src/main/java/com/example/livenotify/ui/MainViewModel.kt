@@ -415,12 +415,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun downloadUpdate(info: ReleaseInfo) = viewModelScope.launch {
         if ((_update.value as? UpdateState.Available)?.downloading == true) return@launch
         _update.value = UpdateState.Available(info, downloading = true, percent = 0)
-        val file = ApkDownloader.download(getApplication(), info.apkUrl, info.versionName) { p ->
+        val file = when (val r = ApkDownloader.download(
+            getApplication(), info.apkUrl, info.versionName, info.sha256
+        ) { p ->
             _update.value = UpdateState.Available(info, downloading = true, percent = p)
-        }
-        if (file == null) {
-            _update.value = UpdateState.Failed("下载失败，请检查网络后重试")
-            return@launch
+        }) {
+            is ApkDownloader.DownloadResult.Failed -> {
+                _update.value = UpdateState.Failed(r.reason)
+                return@launch
+            }
+            is ApkDownloader.DownloadResult.Ok -> r.file
         }
         // 包名 / 签名 / 版本一次校验到位；坏包要删掉，否则下次点「重试」还会复用同一个坏文件
         when (val checked = ApkInstaller.check(getApplication(), file, info.versionCode)) {

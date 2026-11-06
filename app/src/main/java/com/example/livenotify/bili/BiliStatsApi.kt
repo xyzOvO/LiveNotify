@@ -33,6 +33,27 @@ object BiliStatsApi {
     /** 展示给用户的数据来源说明 */
     const val SOURCE_NOTE = "数据来自 danmakus.com 的公开统计（社区采集，非 B 站官方）"
 
+    /** 上次成功的接口域，由 StatsViewModel 从设置里回灌；为空时从主节点开始试 */
+    @Volatile
+    private var preferredOrigin: String? = null
+
+    /** 当前实际生效的域，界面用它显示线路 */
+    @Volatile
+    private var activeOrigin: String = StatsEndpoint.PRIMARY
+
+    /** 线路变化时通知外部持久化，避免网络层直接持有 Context / DataStore */
+    @Volatile
+    var onOriginChanged: ((String) -> Unit)? = null
+
+    fun setPreferredOrigin(origin: String?) {
+        preferredOrigin = origin?.takeIf { it in StatsEndpoint.ORIGINS }
+    }
+
+    fun lineLabel(): String = StatsEndpoint.label(activeOrigin)
+
+    /** 接口文档跟当前线路同源，主域不可用时备用域的 swagger 一样能打开 */
+    fun docsUrl(): String = StatsEndpoint.docsUrl(activeOrigin)
+
     private val limiter = RateLimiter(800L)
 
     /**
@@ -356,62 +377,114 @@ object BiliStatsApi {
         }
     }
 
-    private suspend fun getText(url: String): String = withContext(Dispatchers.IO) {
-        limiter.pass()
-        val req = Request.Builder().url(url)
-            .header("User-Agent", UA)
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Accept-Language", "zh-CN,zh;q=0.9")
-            .build()
-        try {
-            slowClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) throw BiliApiException(httpError(resp.code, resp.body?.string()))
-                resp.body?.string() ?: throw BiliApiException("空响应")
+    /**
+     * 所有请求统一走域链：主域失败（网络异常 / 5xx / 429）才换备用域重试一次；
+     * 4xx 与业务错误换域也没用，直接把服务端的中文原因交给界面。
+     * 成功后记住该域，下次不必再撞一次坏节点。全部失败时给一句明确的中文，
+     * 并说明开播提醒不受影响——这是附加数据页，不能让用户以为主功能挂了。
+     */
+    private suspend fun <T> withFallback(what: String, block: suspend (String) -> T): T {
+        var last: String? = null
+        for (origin in StatsEndpoint.ordered(preferredOrigin)) {
+            try {
+                val result = block(origin)
+                rememberOrigin(origin)
+                return result
+            } catch (e: BiliApiException) {
+                last = e.message
+                if (!e.retryable) throw e
+                Log.w(TAG, "$what 在 $origin 失败，尝试下一个节点：$last")
             }
-        } catch (e: BiliApiException) {
-            throw e
-        } catch (t: Throwable) {
-            Log.w(TAG, "GET $url failed: ${t.message}")
-            throw BiliApiException("网络请求失败，请稍后重试")
+        }
+        throw BiliApiException(
+            "数据服务暂不可用，开播提醒不受影响" + (last?.let { "（$it）" } ?: "")
+        )
+    }
+
+    private fun rememberOrigin(origin: String) {
+        if (activeOrigin == origin && preferredOrigin == origin) return
+        activeOrigin = origin
+        preferredOrigin = origin
+        onOriginChanged?.invoke(origin)
+    }
+
+    private suspend fun getText(url: String): String = withFallback("GET") { origin ->
+        withContext(Dispatchers.IO) {
+            limiter.pass()
+            val req = Request.Builder().url(StatsEndpoint.rewrite(url, BASE, origin))
+                .header("User-Agent", UA)
+                .header("Accept", "application/json, text/plain, */*")
+                .header("Accept-Language", "zh-CN,zh;q=0.9")
+                .build()
+            try {
+                slowClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        throw BiliApiException(
+                            httpError(resp.code, resp.body?.string()),
+                            retryable = resp.code >= 500 || resp.code == 429
+                        )
+                    }
+                    resp.body?.string() ?: throw BiliApiException("空响应", retryable = true)
+                }
+            } catch (e: BiliApiException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.w(TAG, "GET $url failed: ${t.message}")
+                throw BiliApiException("网络请求失败，请稍后重试", retryable = true)
+            }
         }
     }
 
-    private suspend fun postText(url: String, body: String): String = withContext(Dispatchers.IO) {
-        limiter.pass()
-        val req = Request.Builder().url(url)
-            .header("User-Agent", UA)
-            .header("Accept", "application/json")
-            .post(body.toRequestBody(JSON_TYPE))
-            .build()
-        try {
-            slowClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) throw BiliApiException(httpError(resp.code, resp.body?.string()))
-                resp.body?.string() ?: throw BiliApiException("空响应")
+    private suspend fun postText(url: String, body: String): String = withFallback("POST") { origin ->
+        withContext(Dispatchers.IO) {
+            limiter.pass()
+            val req = Request.Builder().url(StatsEndpoint.rewrite(url, BASE, origin))
+                .header("User-Agent", UA)
+                .header("Accept", "application/json")
+                .post(body.toRequestBody(JSON_TYPE))
+                .build()
+            try {
+                slowClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        throw BiliApiException(
+                            httpError(resp.code, resp.body?.string()),
+                            retryable = resp.code >= 500 || resp.code == 429
+                        )
+                    }
+                    resp.body?.string() ?: throw BiliApiException("空响应", retryable = true)
+                }
+            } catch (e: BiliApiException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.w(TAG, "POST $url failed: ${t.message}")
+                throw BiliApiException("网络请求失败，请稍后重试", retryable = true)
             }
-        } catch (e: BiliApiException) {
-            throw e
-        } catch (t: Throwable) {
-            Log.w(TAG, "POST $url failed: ${t.message}")
-            throw BiliApiException("网络请求失败，请稍后重试")
         }
     }
 
-    private suspend fun getBytes(url: String): ByteArray = withContext(Dispatchers.IO) {
-        limiter.pass()
-        val req = Request.Builder().url(url)
-            .header("User-Agent", UA)
-            .header("Accept", "application/x-msgpack")
-            .build()
-        try {
-            slowClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) throw BiliApiException(httpError(resp.code, null))
-                resp.body?.bytes() ?: throw BiliApiException("空响应")
+    private suspend fun getBytes(url: String): ByteArray = withFallback("GET(bytes)") { origin ->
+        withContext(Dispatchers.IO) {
+            limiter.pass()
+            val req = Request.Builder().url(StatsEndpoint.rewrite(url, BASE, origin))
+                .header("User-Agent", UA)
+                .header("Accept", "application/x-msgpack")
+                .build()
+            try {
+                slowClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        throw BiliApiException(
+                            httpError(resp.code, null),
+                            retryable = resp.code >= 500 || resp.code == 429
+                        )
+                    }
+                    resp.body?.bytes() ?: throw BiliApiException("空响应", retryable = true)
+                }
+            } catch (e: BiliApiException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.w(TAG, "GET(bytes) $url failed: ${t.message}")
+                throw BiliApiException("结果下载失败，请稍后重试", retryable = true)
             }
-        } catch (e: BiliApiException) {
-            throw e
-        } catch (t: Throwable) {
-            Log.w(TAG, "GET(bytes) $url failed: ${t.message}")
-            throw BiliApiException("结果下载失败，请稍后重试")
         }
     }
 }
@@ -425,7 +498,11 @@ private fun paymentLabel(type: Int?): String = when (type) {
     else -> "打赏"
 }
 
-class BiliApiException(message: String) : IOException(message)
+/**
+ * [retryable] 为 true 才允许换备用域重试。默认 false：业务错误（400 日期范围、
+ * 主播未收录、任务失败等）换多少个域结果都一样，重试只是白白多一次请求。
+ */
+class BiliApiException(message: String, val retryable: Boolean = false) : IOException(message)
 
 // ── 数据模型 ────────────────────────────────────────────────────────────
 

@@ -8,6 +8,7 @@ import com.example.livenotify.bili.BiliApiException
 import com.example.livenotify.bili.BiliStatsApi
 import com.example.livenotify.bili.CareerStats
 import com.example.livenotify.bili.ChannelStats
+import com.example.livenotify.bili.StatsEndpoint
 import com.example.livenotify.bili.TrendMonth
 import com.example.livenotify.bili.UserAnalysis
 import com.example.livenotify.bili.UserEvent
@@ -31,6 +32,27 @@ import kotlinx.coroutines.launch
 class StatsViewModel(app: Application) : AndroidViewModel(app) {
 
     private val dao = Graph.db.streamerDao()
+
+    /** 数据接口当前线路，界面页脚直接显示，用户能看出自己是不是被切到了备用节点 */
+    private val _lineLabel = MutableStateFlow(BiliStatsApi.lineLabel())
+    val lineLabel: StateFlow<String> = _lineLabel
+
+    init {
+        // 网络层不持有 Context；线路变化时由 ViewModel 落盘，下次启动优先试这个域
+        BiliStatsApi.onOriginChanged = { origin ->
+            _lineLabel.value = StatsEndpoint.label(origin)
+            viewModelScope.launch { runCatching { Graph.settings.setStatsApiOrigin(origin) } }
+        }
+        viewModelScope.launch {
+            val saved = runCatching { Graph.settings.current().statsApiOrigin }.getOrDefault("")
+            BiliStatsApi.setPreferredOrigin(saved.takeIf { it.isNotBlank() })
+        }
+    }
+
+    override fun onCleared() {
+        BiliStatsApi.onOriginChanged = null
+        super.onCleared()
+    }
 
     /** 关注中的 B 站主播 */
     val biliStreamers: StateFlow<List<StreamerEntity>> = dao.observeAll()

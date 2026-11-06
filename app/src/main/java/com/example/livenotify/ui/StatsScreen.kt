@@ -1,5 +1,7 @@
 package com.example.livenotify.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -64,6 +66,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import com.example.livenotify.bili.BiliStatsApi
 import com.example.livenotify.bili.CareerStats
 import com.example.livenotify.bili.ChannelStats
@@ -95,6 +99,7 @@ fun StatsScreen(
 ) {
     val streamers by vm.biliStreamers.collectAsStateWithLifecycle()
     val ui by vm.channelUi.collectAsStateWithLifecycle()
+    val line by vm.lineLabel.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var selectedUid by rememberSaveable { mutableStateOf(initialUid) }
     var showUidDialog by rememberSaveable { mutableStateOf(false) }
@@ -160,8 +165,8 @@ fun StatsScreen(
             }
 
             when (tab) {
-                0 -> ChannelTab(ui = ui, onRetry = { vm.reload() }, onOpenUid = { showUidDialog = true })
-                else -> UserTab(vm = vm, defaultUid = selectedUid)
+                0 -> ChannelTab(ui = ui, line = line, onRetry = { vm.reload() }, onOpenUid = { showUidDialog = true })
+                else -> UserTab(vm = vm, defaultUid = selectedUid, line = line)
             }
         }
     }
@@ -183,6 +188,7 @@ fun StatsScreen(
 @Composable
 private fun ChannelTab(
     ui: StatsViewModel.ChannelUi,
+    line: String,
     onRetry: () -> Unit,
     onOpenUid: () -> Unit
 ) {
@@ -221,12 +227,18 @@ private fun ChannelTab(
             }
             ui.career?.let { c -> item { CareerCard(c) } }
             item {
-                Text(
-                    BiliStatsApi.SOURCE_NOTE,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.outline.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
-                )
+                Column(modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)) {
+                    Text(
+                        BiliStatsApi.SOURCE_NOTE,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cs.outline.copy(alpha = 0.7f)
+                    )
+                    Text(
+                        "当前线路：$line",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cs.outline.copy(alpha = 0.7f)
+                    )
+                }
             }
         }
     }
@@ -342,9 +354,14 @@ private fun FansCard(points: List<FansPoint>, current: Int) {
         if (points.size >= 2) {
             val spanDays = ((points.last().at - points.first().at) / 86_400_000L).coerceAtLeast(0L)
             Text(
-                "社区采集区间：共 ${points.size} 个采样点、跨 $spanDays 天（非平台完整历史）",
+                "当前采集区间：共 ${points.size} 个采样点、跨 $spanDays 天",
                 style = MaterialTheme.typography.labelSmall,
                 color = cs.outline
+            )
+            Text(
+                "数据覆盖取决于社区采集范围",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline.copy(alpha = 0.7f)
             )
         }
         Spacer(Modifier.height(10.dp))
@@ -356,9 +373,10 @@ private fun FansCard(points: List<FansPoint>, current: Int) {
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    "这个主播还没有粉丝历史采样",
+                    "社区尚未采集到该主播的粉丝历史。\n数据覆盖取决于社区采集范围。",
                     style = MaterialTheme.typography.bodySmall,
-                    color = cs.outline
+                    color = cs.outline,
+                    textAlign = TextAlign.Center
                 )
             }
         } else {
@@ -502,7 +520,7 @@ private fun CareerCard(c: CareerStats) {
 // ── Tab 2：互动事件 ─────────────────────────────────────────────────────
 
 @Composable
-private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
+private fun UserTab(vm: StatsViewModel, defaultUid: Long, line: String) {
     val analysis by vm.analysis.collectAsStateWithLifecycle()
     val recent by vm.recent.collectAsStateWithLifecycle()
     val cs = MaterialTheme.colorScheme
@@ -601,12 +619,7 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
                         }
                     }
                 }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    BiliStatsApi.SOURCE_NOTE,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.outline.copy(alpha = 0.7f)
-                )
+                CreditCard(line = line)
             }
         }
 
@@ -626,6 +639,14 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
 
             is StatsViewModel.RecentUi.Done -> if (r.events.isNotEmpty()) {
                 item { RecentEventsCard(r.events) }
+            } else {
+                item {
+                    Text(
+                        "社区尚未采集到该用户的互动记录，数据覆盖取决于社区采集范围。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cs.outline
+                    )
+                }
             }
 
             else -> {}
@@ -671,6 +692,45 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long) {
  * 每行的时间、类型、内容、直播间来自同一条服务端记录，用固定宽度的时间列
  * 对齐，内容再长也不会把时间挤歪——这是「不错位」的关键。
  */
+/**
+ * 互动事件页的鸣谢与线路说明。
+ * 文案只讲事实：数据由社区客户端采集，覆盖范围取决于采集，不是官方全量。
+ * 文档地址跟当前线路同源，主域不可用时备用域的 swagger 一样能打开。
+ */
+@Composable
+private fun CreditCard(line: String) {
+    val cs = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val docs = BiliStatsApi.docsUrl()
+    Column {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "鸣谢 danmakus.com：本页数据来自社区客户端采集并开放的公开统计接口，数据覆盖取决于社区采集范围，非 B 站官方数据。",
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.outline.copy(alpha = 0.7f)
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "接口文档 · 当前线路：$line",
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.outline.copy(alpha = 0.7f)
+        )
+        Text(
+            docs,
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.primary,
+            modifier = Modifier.clickable {
+                runCatching {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(docs))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }
+        )
+    }
+}
+
 @Composable
 private fun RecentEventsCard(events: List<UserEvent>) {
     val cs = MaterialTheme.colorScheme
