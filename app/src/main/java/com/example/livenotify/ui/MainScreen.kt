@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -66,9 +67,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -110,7 +113,10 @@ fun MainScreen(
     /** 通知权限授权结果的自增计数：授权是一次性回调，用它驱动重新读取权限状态 */
     permissionRevision: Int = 0,
     /** 打开 B 站数据页（传入该主播的 uid） */
-    onOpenStats: (Long) -> Unit = {}
+    onOpenStats: (Long) -> Unit = {},
+    /** 系统分享带进来的文案；只用于预填添加框，消费后由调用方置空 */
+    sharedText: String? = null,
+    onConsumeSharedText: () -> Unit = {}
 ) {
     val list by vm.streamers.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
@@ -144,9 +150,41 @@ fun MainScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // ── 搜索与筛选：纯 UI 派生，保持 vm.streamers 是完整列表（后台检测与常驻通知都靠它）
+    var query by rememberSaveable { mutableStateOf("") }
+    var platformFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    var liveOnly by rememberSaveable { mutableStateOf(false) }
+    /** 少于 8 位时默认不占地方，但留一个搜索入口，别让功能变成摆设 */
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    val visible = remember(list, query, platformFilter, liveOnly) {
+        val q = query.trim()
+        list.filter { s ->
+            (q.isBlank() || s.nickname.contains(q, ignoreCase = true) ||
+                s.displayId.contains(q, ignoreCase = true) ||
+                s.anchorId.contains(q, ignoreCase = true)) &&
+                (platformFilter == null || s.platformId == platformFilter) &&
+                (!liveOnly || (s.enabled && s.isLive && !s.missing))
+        }
+    }
+    val filtering = query.isNotBlank() || platformFilter != null || liveOnly || searchExpanded
+
     var showAdd by remember { mutableStateOf(false) }
+    /** 从系统分享带进来的文案，用于预填添加框；null 表示手工点开的空白框 */
+    var addInitialText by remember { mutableStateOf<String?>(null) }
     var pendingDelete by remember { mutableStateOf<StreamerEntity?>(null) }
     var actionFor by remember { mutableStateOf<StreamerEntity?>(null) }
+    /** 恢复关注要联网取一次快照，期间锁住按钮避免重复点击 */
+    var enabledBusy by remember { mutableStateOf(false) }
+
+    // 分享文案只在这里预填，绝不自动落库：仍然由用户看到识别结果后点「添加」
+    LaunchedEffect(sharedText) {
+        val incoming = sharedText
+        if (!incoming.isNullOrBlank()) {
+            addInitialText = incoming
+            showAdd = true
+            onConsumeSharedText()
+        }
+    }
 
     // 相对时间自刷新，避免「已播 5 分钟」卡住不动
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -172,7 +210,7 @@ fun MainScreen(
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { showAdd = true },
+                onClick = { addInitialText = null; showAdd = true },
                 icon = { Icon(Icons.Default.Add, contentDescription = null) },
                 text = { Text("添加关注") },
                 containerColor = MaterialTheme.colorScheme.primary,
@@ -193,8 +231,9 @@ fun MainScreen(
             ) {
                 item {
                     HeroHeader(
-                        total = list.size,
-                        liveCount = list.count { it.isLive },
+                        total = list.count { it.enabled },
+                        liveCount = list.count { it.enabled && it.isLive },
+                        pausedCount = list.count { !it.enabled },
                         monitoring = settings.monitorEnabled && monitorRunning,
                         refreshing = refreshing,
                         onRefresh = { vm.checkNow() },
@@ -253,17 +292,92 @@ fun MainScreen(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
                             )
+                            if (list.size < 8 && !filtering) {
+                                IconButton(onClick = { searchExpanded = true }) {
+                                    Icon(
+                                        Icons.Default.Search,
+                                        contentDescription = "搜索关注列表",
+                                        tint = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
                         }
                     }
-                    items(list, key = { it.id }) { s ->
-                        StreamerCard(
-                            s = s,
-                            now = now,
-                            // 卡片本身不再直接跳直播间：手指一滑就弹浏览器，回来还得重新找。
-                            // 点击与长按都只开操作面板，真正跳转只留面板里的「打开直播间」。
-                            onClick = { actionFor = s },
-                            onLongClick = { actionFor = s }
-                        )
+                    // 关注数不多时搜索框是负担，只在必要时出现；有筛选条件时也保留以便清除
+                    if (list.size >= 8 || filtering) {
+                        item {
+                            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                                OutlinedTextField(
+                                    value = query,
+                                    onValueChange = { query = it },
+                                    label = { Text("搜索昵称或房间号") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = platformFilter == null,
+                                        onClick = { platformFilter = null },
+                                        label = { Text("全部平台") }
+                                    )
+                                    PlatformRegistry.all().forEach { p ->
+                                        FilterChip(
+                                            selected = platformFilter == p.id,
+                                            onClick = {
+                                                platformFilter = if (platformFilter == p.id) null else p.id
+                                            },
+                                            label = { Text(p.displayName) }
+                                        )
+                                    }
+                                    FilterChip(
+                                        selected = liveOnly,
+                                        onClick = { liveOnly = !liveOnly },
+                                        label = { Text("只看直播中") }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (visible.isEmpty()) {
+                        item {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 40.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    "没有匹配的主播",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(
+                                    onClick = {
+                                        query = ""
+                                        platformFilter = null
+                                        liveOnly = false
+                                        searchExpanded = false
+                                    }
+                                ) { Text("清除筛选") }
+                            }
+                        }
+                    } else {
+                        items(visible, key = { it.id }) { s ->
+                            StreamerCard(
+                                s = s,
+                                now = now,
+                                // 卡片本身不再直接跳直播间：手指一滑就弹浏览器，回来还得重新找。
+                                // 点击与长按都只开操作面板，真正跳转只留面板里的「打开直播间」。
+                                onClick = { actionFor = s },
+                                onLongClick = { actionFor = s }
+                            )
+                        }
                     }
                 }
             }
@@ -271,7 +385,11 @@ fun MainScreen(
     }
 
     if (showAdd) {
-        AddStreamerDialog(onDismiss = { showAdd = false }, vm = vm)
+        AddStreamerDialog(
+            vm = vm,
+            initialText = addInitialText,
+            onDismiss = { showAdd = false; addInitialText = null }
+        )
     }
 
     // 关注问候：命中配置的主播时弹一句专属台词
@@ -305,6 +423,19 @@ fun MainScreen(
                     onOpenStats(s.anchorId.toLongOrNull() ?: 0L)
                 }
             } else null,
+            enabledBusy = enabledBusy,
+            onToggleEnabled = {
+                scope.launch {
+                    enabledBusy = true
+                    val err = vm.setStreamerEnabled(s, !s.enabled)
+                    enabledBusy = false
+                    actionFor = null
+                    vm.notify(
+                        err ?: if (s.enabled) "已暂停「${s.nickname}」，不再检测与提醒"
+                        else "已恢复「${s.nickname}」"
+                    )
+                }
+            },
             onRemove = { actionFor = null; pendingDelete = s },
             onDismiss = { actionFor = null }
         )
@@ -342,6 +473,8 @@ fun MainScreen(
 private fun HeroHeader(
     total: Int,
     liveCount: Int,
+    /** 已暂停的关注数，单独提示，避免和「正在监控」混在一起 */
+    pausedCount: Int = 0,
     monitoring: Boolean,
     refreshing: Boolean,
     onRefresh: () -> Unit,
@@ -374,9 +507,11 @@ private fun HeroHeader(
                         buildString {
                             append(if (monitoring) "监控中" else "已暂停")
                             append(" · ")
-                            if (total == 0) append("暂无关注")
+                            if (total == 0 && pausedCount == 0) append("暂无关注")
+                            else if (total == 0) append("全部已暂停")
                             else if (liveCount > 0) append("$liveCount / $total 位正在直播")
                             else append("$total 位都很安静")
+                            if (pausedCount > 0) append(" · $pausedCount 位已暂停")
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = cs.onPrimaryContainer.copy(alpha = 0.72f)
@@ -529,7 +664,8 @@ private fun StreamerCard(
     onLongClick: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
-    val live = s.isLive && !s.missing
+    // 暂停的卡片一律不显示「直播中」高亮，避免看起来还在被监控
+    val live = s.enabled && s.isLive && !s.missing
     val shape = RoundedCornerShape(18.dp)
 
     Card(
@@ -537,6 +673,7 @@ private fun StreamerCard(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 5.dp)
             .clip(shape)
+            .alpha(if (s.enabled) 1f else 0.62f)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = shape,
         colors = CardDefaults.cardColors(
@@ -755,6 +892,7 @@ private fun AvatarWithBadge(s: StreamerEntity, live: Boolean) {
 private fun StatusPill(s: StreamerEntity) {
     val cs = MaterialTheme.colorScheme
     val (color, text) = when {
+        !s.enabled -> cs.outline to "已暂停"
         s.missing -> cs.outline to "失效"
         s.isLive -> LiveAccent to "直播中"
         s.errorCount >= 3 -> cs.error to "异常"
@@ -790,6 +928,8 @@ private fun StreamerActionDialog(
     onCopy: () -> Unit,
     /** 仅 B 站主播有数据可看，其余平台传 null 时不显示入口 */
     onStats: (() -> Unit)?,
+    enabledBusy: Boolean,
+    onToggleEnabled: () -> Unit,
     onRemove: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -821,6 +961,26 @@ private fun StreamerActionDialog(
                         )
                     }
                 }
+                TextButton(
+                    onClick = onToggleEnabled,
+                    enabled = !enabledBusy,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (enabledBusy) "正在处理…"
+                        else if (s.enabled) "暂停关注" else "恢复关注",
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Start,
+                        color = if (s.enabled) cs.onSurface else okColor()
+                    )
+                }
+                if (!s.enabled) {
+                    Text(
+                        "已暂停：保留卡片，但不再检测、不再提醒",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cs.outline
+                    )
+                }
                 TextButton(onClick = onRemove, modifier = Modifier.fillMaxWidth()) {
                     Text(
                         "移除关注",
@@ -837,12 +997,21 @@ private fun StreamerActionDialog(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AddStreamerDialog(vm: MainViewModel, onDismiss: () -> Unit) {
-    var text by remember { mutableStateOf("") }
+private fun AddStreamerDialog(
+    vm: MainViewModel,
+    onDismiss: () -> Unit,
+    /** 非空表示来自系统分享：预填文案并显示提取结果，仍要用户确认才添加 */
+    initialText: String? = null
+) {
+    var text by remember { mutableStateOf(initialText.orEmpty()) }
     var forced by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    // 对话框已经开着时又收到一次分享，把新文案换上去，别让 remember 的初值挡住
+    LaunchedEffect(initialText) {
+        if (!initialText.isNullOrBlank()) text = initialText
+    }
 
     AlertDialog(
         // 请求进行中点外部/返回键会让协程被取消、添加静默中断，busy 时直接忽略
@@ -859,16 +1028,28 @@ private fun AddStreamerDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     placeholder = { Text("可直接粘贴App分享出来的整段文案") }
                 )
                 // 实时识别预览：粘贴后立刻知道会被解析成哪个平台，粘错马上能看到
-                val detectedName = remember(text) {
+                val extracted = remember(text) {
                     val t = text.trim()
-                    if (t.isBlank()) null
-                    else PlatformRegistry.detect(ShareText.extract(t))?.displayName
+                    if (t.isBlank()) "" else ShareText.extract(t)
+                }
+                val detectedName = remember(extracted) {
+                    if (extracted.isBlank()) null
+                    else PlatformRegistry.detect(extracted)?.displayName
+                }
+                if (initialText != null) {
+                    Text(
+                        "来自分享，已自动提取；确认无误再点「添加」",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
                 if (detectedName != null) {
                     Text(
-                        "已识别：$detectedName",
+                        "已识别：$detectedName" +
+                            if (extracted != text.trim()) " · $extracted" else "",
                         style = MaterialTheme.typography.labelSmall,
-                        color = okColor()
+                        color = okColor(),
+                        maxLines = 2
                     )
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

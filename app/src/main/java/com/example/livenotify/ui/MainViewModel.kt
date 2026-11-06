@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.livenotify.util.BackupFormat
 import com.example.livenotify.util.ShareText
 import com.example.livenotify.Graph
 import com.example.livenotify.data.EasterEggs
@@ -12,6 +13,7 @@ import com.example.livenotify.data.Settings
 import com.example.livenotify.data.StreamerEntity
 import com.example.livenotify.monitor.MonitorService
 import com.example.livenotify.monitor.NotificationHelper
+import com.example.livenotify.monitor.resumeBaseline
 import com.example.livenotify.BuildConfig
 import com.example.livenotify.platform.DouyinPlatform
 import com.example.livenotify.platform.LiveState
@@ -25,6 +27,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -141,9 +144,150 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return AddResult.Success(snap.nickname)
     }
 
+    // ── 关注列表备份 / 恢复 ─────────────────────────────────────────
+
+    /** 导出用的 JSON 字符串。只含平台/主播 ID、暂停状态与白名单设置 */
+    suspend fun exportBackup(): String {
+        val all = dao.observeAll().first()
+        val s = Graph.settings.current()
+        return BackupFormat.encode(BackupFormat.snapshotOf(all, s, System.currentTimeMillis()))
+    }
+
+    /** 导入结果：逐条处理，单条失败不影响其余条目 */
+    data class ImportReport(val added: Int, val skipped: Int, val failed: List<String>)
+
+    /**
+     * 导入备份。不直接把 JSON 字段塞进数据库——那会把旧设备的开播状态、
+     * 已通知场次一起带过来，下一轮轮询就可能补推一条过期提醒。
+     *
+     * 每条都重新向平台取一次快照，再用 resumeBaseline 初始化通知基准；
+     * 已存在的主播保持原样（含用户后来改过的暂停状态），只计入 skipped。
+     */
+    suspend fun importBackup(text: String): ImportReport {
+        val data = try {
+            BackupFormat.decode(text)
+        } catch (t: Throwable) {
+            return ImportReport(0, 0, listOf(t.message ?: "备份文件无法解析"))
+        }
+        var added = 0
+        var skipped = 0
+        val failed = ArrayList<String>()
+        for (e in data.entries) {
+            val platform = PlatformRegistry.get(e.platformId)
+            if (platform == null) {
+                failed.add("未知平台 ${e.platformId} · ${e.anchorId}")
+                continue
+            }
+            if (dao.findByAnchor(e.platformId, e.anchorId) != null) {
+                skipped++
+                continue
+            }
+            if (platform.id == DouyinPlatform.id) {
+                DouyinPlatform.cookie = Graph.settings.current().douyinCookie
+            }
+            val outcome = try {
+                platform.fetch(listOf(e.anchorId))
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                null
+            }?.firstOrNull()
+            val snap = when (outcome) {
+                is Outcome.Ok -> outcome.snapshot
+                is Outcome.Missing -> {
+                    failed.add("${platform.displayName} ${e.anchorId}：${outcome.reason}")
+                    continue
+                }
+                is Outcome.Failed -> {
+                    failed.add("${platform.displayName} ${e.anchorId}：${outcome.reason}")
+                    continue
+                }
+                null -> {
+                    failed.add("${platform.displayName} ${e.anchorId}：获取失败")
+                    continue
+                }
+            }
+            // 用平台刚返回的真实信息建行，不走解析链；通知基准对齐当前场次
+            val fresh = StreamerEntity(
+                platformId = platform.id,
+                anchorId = e.anchorId,
+                nickname = snap.nickname.ifBlank { e.anchorId },
+                roomUrl = snap.roomUrl
+            )
+            val entity = resumeBaseline(fresh, snap, System.currentTimeMillis(), enabled = e.enabled)
+            if (dao.insert(entity) == -1L) {
+                skipped++
+            } else {
+                added++
+            }
+        }
+        // 设置最后写：某些项（监控开关）会影响服务启停，别让中途状态反复横跳
+        try {
+            data.prefs.applyTo(Graph.settings)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            failed.add("设置恢复失败：${t.message ?: "未知错误"}")
+        }
+        if (added > 0) {
+            MonitorService.refreshIfRunning(getApplication())
+            if (Graph.settings.current().monitorEnabled) MonitorService.start(getApplication())
+        }
+        return ImportReport(added, skipped, failed)
+    }
+
     fun remove(s: StreamerEntity) = viewModelScope.launch {
         dao.deleteById(s.id)
         MonitorService.refreshIfRunning(getApplication())
+    }
+
+    /**
+     * 暂停 / 恢复某位主播的关注。返回 null 表示成功，否则是可直接展示的失败原因。
+     *
+     * 暂停只改 enabled：引擎用 listEnabled() 取数，自然不会再检测它；卡片本身仍在
+     * observeAll() 里，不会消失。同时清掉「直播中」这类会误导的旧状态。
+     *
+     * 恢复比较讲究：暂停期间主播可能下播又重开，若直接把 enabled 置回 true，
+     * LiveTransition 会因为场次 key 变化判定「新场次」而立刻推一条过期提醒。
+     * 所以先拉一次当前快照作为基准，并把当前场次记为「已通知」，再恢复监控。
+     * 拉取失败就不恢复，宁可让用户重试，也不制造误报。
+     */
+    suspend fun setStreamerEnabled(s: StreamerEntity, enabled: Boolean): String? {
+        if (!enabled) {
+            dao.update(
+                s.copy(
+                    enabled = false,
+                    isLive = false,
+                    liveStreak = 0,
+                    liveStartAt = 0L
+                )
+            )
+            MonitorService.refreshIfRunning(getApplication())
+            return null
+        }
+
+        val platform = PlatformRegistry.get(s.platformId)
+            ?: return "找不到该主播的平台配置，无法恢复"
+        if (platform.id == DouyinPlatform.id) {
+            DouyinPlatform.cookie = Graph.settings.current().douyinCookie
+        }
+        val outcome = try {
+            platform.fetch(listOf(s.anchorId))
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            null
+        }?.firstOrNull() ?: return "获取直播状态失败，请检查网络后再恢复"
+
+        val snap = when (outcome) {
+            is Outcome.Ok -> outcome.snapshot
+            is Outcome.Missing -> return outcome.reason
+            is Outcome.Failed -> return outcome.reason
+        }
+        val now = System.currentTimeMillis()
+        dao.update(resumeBaseline(s, snap, now))
+        MonitorService.refreshIfRunning(getApplication())
+        return null
     }
 
     /**

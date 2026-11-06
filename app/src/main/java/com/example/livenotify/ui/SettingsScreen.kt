@@ -3,18 +3,25 @@ package com.example.livenotify.ui
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -35,6 +42,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +62,13 @@ import com.example.livenotify.update.ApkInstaller
 import com.example.livenotify.update.ReleaseInfo
 import com.example.livenotify.update.UpdateApi
 import com.example.livenotify.util.AutoStartHelper
+import com.example.livenotify.util.BackupFormat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -454,6 +469,10 @@ fun SettingsScreen(
             }
 
             item {
+                BackupSection(vm = vm, context = context)
+            }
+
+            item {
                 Section("关于") {
                     Text(
                         "开播提醒 v${com.example.livenotify.BuildConfig.VERSION_NAME}（build ${com.example.livenotify.BuildConfig.VERSION_CODE}）",
@@ -465,11 +484,170 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline
                     )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        "来自 xyzOvO",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    // 直接显示完整地址，方便用户看清来源；点击交给系统选择浏览器或 GitHub 客户端
+                    TextButton(
+                        onClick = { openProject(context) },
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            UpdateApi.PROJECT_PAGE,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             }
 
             item { Spacer(modifier = Modifier.height(32.dp)) }
         }
+    }
+}
+
+/**
+ * 关注列表备份 / 恢复。
+ *
+ * 用系统文件选择器（SAF），不申请任何存储权限、不碰云服务。导出只写用户选的文件；
+ * 导入会改数据库和设置，所以先解析出条数给用户看一眼，确认后才真的落库。
+ */
+@Composable
+private fun BackupSection(vm: MainViewModel, context: Context) {
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    /** 已读出但尚未确认的备份：确认前绝不写库 */
+    var pending by remember { mutableStateOf<Pair<String, BackupFormat.Data>?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(BackupFormat.MIME)
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            busy = true
+            message = null
+            val result = runCatching {
+                val json = vm.exportBackup()
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { os ->
+                        os.write(json.toByteArray(Charsets.UTF_8))
+                    } ?: error("无法写入所选文件")
+                }
+            }
+            busy = false
+            message = if (result.isSuccess) "已导出关注列表" else "导出失败：${result.exceptionOrNull()?.message}"
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            busy = true
+            message = null
+            val text = withContext(Dispatchers.IO) {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+            }
+            busy = false
+            if (text.isNullOrBlank()) {
+                message = "读取失败：文件内容为空"
+                return@launch
+            }
+            val parsed = runCatching { BackupFormat.decode(text) }
+            if (parsed.isFailure) {
+                message = parsed.exceptionOrNull()?.message ?: "备份文件无法解析"
+                return@launch
+            }
+            // 只展示，不落库；用户在下面的对话框里决定
+            pending = text to parsed.getOrThrow()
+        }
+    }
+
+    Section("关注列表备份") {
+        Text(
+            "换手机或重装前导出一份 JSON；导入时会重新获取主播信息，" +
+                "不会把旧设备上的开播状态、通知记录带过来。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                enabled = !busy,
+                onClick = {
+                    val name = "LiveNotify-关注列表-" +
+                        SimpleDateFormat("yyyyMMdd-HHmm", Locale.getDefault()).format(Date()) + ".json"
+                    exportLauncher.launch(name)
+                },
+                modifier = Modifier.weight(1f)
+            ) { Text("导出关注列表") }
+            OutlinedButton(
+                enabled = !busy,
+                onClick = { importLauncher.launch(arrayOf(BackupFormat.MIME, "text/plain", "*/*")) },
+                modifier = Modifier.weight(1f)
+            ) { Text("导入关注列表") }
+        }
+        if (busy) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("处理中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            }
+        }
+        message?.let {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+        }
+        Text(
+            "不备份：抖音 Cookie、昵称头像等临时信息、当前直播状态、通知冷却。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+        )
+    }
+
+    pending?.let { (raw, data) ->
+        AlertDialog(
+            onDismissRequest = { pending = null },
+            title = { Text("导入这份备份？") },
+            text = {
+                Column {
+                    Text("共 ${data.entries.size} 位主播，另含检测与提醒设置。")
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "已有的主播保持原样，不会覆盖；新主播会重新联网获取信息。" +
+                            "导入后不会补发任何历史开播提醒。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pending = null
+                        scope.launch {
+                            busy = true
+                            val r = vm.importBackup(raw)
+                            busy = false
+                            message = buildString {
+                                append("导入完成：新增 ${r.added} 位")
+                                if (r.skipped > 0) append("，跳过已有 ${r.skipped} 位")
+                                if (r.failed.isNotEmpty()) append("，失败 ${r.failed.size} 位")
+                            }
+                            if (r.failed.isNotEmpty()) {
+                                context.toast(r.failed.take(2).joinToString("；"))
+                            }
+                        }
+                    }
+                ) { Text("确认导入") }
+            },
+            dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } }
+        )
     }
 }
 
@@ -607,6 +785,16 @@ private fun HourField(
         singleLine = true,
         modifier = modifier
     )
+}
+
+/** 关于里的项目主页：交给系统选择浏览器 / 已关联的 GitHub 客户端 */
+private fun openProject(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(UpdateApi.PROJECT_PAGE))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
 }
 
 private fun openReleases(context: Context) {

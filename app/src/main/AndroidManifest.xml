@@ -66,6 +66,25 @@
             </intent-filter>
         </activity>
 
+        <!--
+          系统分享菜单的中转：只接文字，把文案转给 MainActivity 预填添加框后立刻结束。
+          用独立 Activity 而不是给 MainActivity 改 launchMode——后者会影响从通知/桌面回来的既有行为。
+          noHistory + excludeFromRecents 保证它不在返回栈里留痕。
+        -->
+        <activity
+            android:name=".ui.ShareReceiveActivity"
+            android:exported="true"
+            android:label="@string/share_receive_label"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
         <!-- specialUse：见上方权限注释。subtype 是给系统与审核看的一句话用途说明 -->
         <service
             android:name=".monitor.MonitorService"

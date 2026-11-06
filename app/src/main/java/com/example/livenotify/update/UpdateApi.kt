@@ -28,6 +28,9 @@ object UpdateApi {
 
     private const val LATEST = "https://api.github.com/repos/$OWNER/$REPO/releases/latest"
 
+    /** 项目主页，设置页「关于」里展示并可点击打开 */
+    const val PROJECT_PAGE = "https://github.com/$OWNER/$REPO"
+
     /** 仓库 Releases 页，供手动下载兜底 */
     const val RELEASES_PAGE = "https://github.com/$OWNER/$REPO/releases"
 
