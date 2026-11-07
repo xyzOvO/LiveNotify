@@ -146,11 +146,11 @@ The cover screenshot reads top-to-bottom as follows. **One streamer per platform
 | 5 | Streamer cards × 4 | See the table below |
 | 6 | Bottom-right **+** | Add a streamer; hidden while search is open so the keyboard does not cover the results |
 
-> The cover was re-shot on 2026-11-07 with **search expanded**: one streamer per platform, with the same names and card layout as before. All four happened to be offline at the time; a live card gets a soft red highlight and shows "Live for…". The Douyin card shows the `web_rid` returned by the platform (its stable room identifier) — the Douyin number `629458933` in the example link points to the same streamer.
+> The cover was re-shot on 2026-11-07 (updated again after v1.0.12) with **search expanded**: one streamer per platform, the same names and room IDs, and the search placeholder now matches the current build. At the time of the shot **七海Nana7mi was live** — her card has a soft red highlight and shows "Live for…" — while the other three were offline. The Douyin card shows the `web_rid` returned by the platform (its stable room identifier) — the Douyin number `629458933` in the example link points to the same streamer.
 
 | Platform | Streamer | Room ID (example link) | When the cover was shot |
 |---|---|---|---|
-| **Bilibili** | 七海Nana7mi | `21452505` | ⚪ Offline |
+| **Bilibili** | 七海Nana7mi | `21452505` | 🔴 Live |
 | **Douyin** | 女流66 | `629458933` | ⚪ Offline |
 | **Douyu** | 寅子 | `71415` | ⚪ Offline |
 | **Huya** | 骚男 | `520520` | ⚪ Offline |
