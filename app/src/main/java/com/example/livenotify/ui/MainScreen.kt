@@ -184,11 +184,8 @@ fun MainScreen(
     val keyboard = LocalSoftwareKeyboardController.current
     val searchFocus = remember { FocusRequester() }
     val visible = remember(list, query, platformFilter, liveOnly) {
-        val q = query.trim()
         list.filter { s ->
-            (q.isBlank() || s.nickname.contains(q, ignoreCase = true) ||
-                s.displayId.contains(q, ignoreCase = true) ||
-                s.anchorId.contains(q, ignoreCase = true)) &&
+            matchesSearchQuery(query, s.nickname, s.displayId, s.anchorId, s.note) &&
                 (platformFilter == null || s.platformId == platformFilter) &&
                 (!liveOnly || (s.enabled && s.isLive && !s.missing))
         }
@@ -375,7 +372,7 @@ fun MainScreen(
                                     OutlinedTextField(
                                         value = query,
                                         onValueChange = { query = it },
-                                        placeholder = { Text("搜索昵称或房间号") },
+                                        placeholder = { Text("搜索昵称 / 房间号 / 短号") },
                                         leadingIcon = {
                                             Icon(
                                                 Icons.Default.Search,
@@ -602,6 +599,36 @@ fun MainScreen(
             dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } }
         )
     }
+}
+
+/**
+ * 平台附注里可搜索的号码。
+ *
+ * B 站短号（如「短号 510」）既不在 displayId（真实房间号）也不在 anchorId（uid）里，
+ * 只存在 note 中；而 note 同时装着「轮播中」、斗鱼分区名等说明，照单全搜会让
+ * 「影之刃零」这类词把整组主播翻出来。所以只认「短号 <纯数字>」这一段。
+ */
+internal fun shortIdFromNote(note: String): String? =
+    note.trim()
+        .takeIf { it.startsWith("短号 ") }
+        ?.removePrefix("短号 ")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() && it.all { c -> c.isDigit() } }
+
+/** 搜索命中：昵称 / 房间号 / 平台内标识 / B 站短号，任一子串命中即可。 */
+internal fun matchesSearchQuery(
+    query: String,
+    nickname: String,
+    displayId: String,
+    anchorId: String,
+    note: String
+): Boolean {
+    val q = query.trim()
+    if (q.isBlank()) return true
+    return nickname.contains(q, ignoreCase = true) ||
+        displayId.contains(q, ignoreCase = true) ||
+        anchorId.contains(q, ignoreCase = true) ||
+        (shortIdFromNote(note)?.contains(q, ignoreCase = true) == true)
 }
 
 /**
@@ -1319,9 +1346,10 @@ private fun AddStreamerDialog(
 @Composable
 private fun ReadyBody(r: MainViewModel.AddResult.Ready) {
     val cs = MaterialTheme.colorScheme
-    // 不同平台 ID 的叫法不一样，别把抖音号也写成 UID
+    // 确认页展示的是 displayId（B 站/斗鱼/虎牙为房间号、抖音为抖音号），
+    // B 站的 anchorId 才是 UID——两者不是一个号，别把房间号标成 UID。
     val idLabel = when (r.entity.platformId) {
-        "bilibili" -> "UID"
+        "bilibili" -> "房间号"
         "douyin" -> "抖音号"
         else -> "房间号"
     }

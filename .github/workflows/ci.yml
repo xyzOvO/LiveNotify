@@ -66,6 +66,19 @@ jobs:
         if: env.EXTRA_LINES != ''
         run: python3 tools/inject_extra.py
 
+      # 注入是静默可选的：Secret 为空时上面这步直接跳过，公开版的 listOf() 照样能编译，
+      # 产出的却是一个一条问候都没有的包——版本号升了，功能悄悄退了。
+      # 打包前数一次条目行，不足就中止；只数行数，不写任何条目内容。
+      # 以后每往 Secret 里加一条，同步把下面的下限 +1。
+      - name: 校验私有条目已注入
+        run: |
+          COUNT=$(grep -cE '^[[:space:]]*Entry\(' app/src/main/java/com/example/livenotify/data/EasterEggs.kt || true)
+          echo "已注入条目行数: $COUNT"
+          if [ "$COUNT" -lt 15 ]; then
+            echo "::error::私有条目只有 $COUNT 行（当前版本应至少 15 行）。请检查 GitHub Secret EXTRA_LINES 是否已整体更新为新值（Secret 只能覆盖、不能追加），更新后重跑本工作流。"
+            exit 1
+          fi
+
       # 正式签名必需：没有密钥时 Gradle 会回退 debug 签名，而 GitHub runner 每次的 debug 密钥
       # 都是临时生成的 —— 两次 Release 的签名不同，用户无法覆盖升级（只能卸载重装，数据全丢）。
       # 所以这里直接失败，而不是产出一个「能装但不能升级」的包。

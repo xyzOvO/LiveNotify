@@ -141,6 +141,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             avatarUrl = snap.avatarUrl,
             title = snap.title,
             roomUrl = snap.roomUrl,
+            // 平台附注（B 站短号 / 斗鱼分区 / 轮播中）添加时就带上，
+            // 否则要等下一轮轮询写入，后台检测关闭或检测被跳过时甚至永远不显示。
+            note = snap.note?.takeIf { it.isNotBlank() } ?: "",
             isLive = snap.state == LiveState.LIVE,
             liveStreak = if (snap.state == LiveState.LIVE) 1 else 0,
             liveStartAt = if (snap.state == LiveState.LIVE) snap.liveStartAt else 0L,
