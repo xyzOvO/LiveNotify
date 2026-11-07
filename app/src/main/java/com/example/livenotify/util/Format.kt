@@ -32,6 +32,16 @@ object Format {
         return relative(sec * 1000L)
     }
 
+    /** 字节数 → "860 KB" / "8.4 MB"；0 或负数返回空串（界面据此决定是否显示） */
+    fun size(bytes: Long): String {
+        if (bytes <= 0L) return ""
+        return when {
+            bytes < 1024L -> "$bytes B"
+            bytes < 1024L * 1024L -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
+            else -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
+        }
+    }
+
     /**
      * 「上次开播」专用：始终给出"距今多久"，超过 30 天才退回绝对日期。
      * 与 [relative] 分开，是因为后者在 48 小时以上就返回日期串，会和并排显示的日期重复。

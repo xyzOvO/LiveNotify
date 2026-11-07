@@ -54,8 +54,14 @@ object ApkDownloader {
     /** 下载结果：把「网络失败」和「文件校验失败」分开，界面才能给对提示 */
     sealed interface DownloadResult {
         data class Ok(val file: File) : DownloadResult
-        data class Failed(val reason: String) : DownloadResult
+        data class Failed(val reason: String, val failure: Failure) : DownloadResult
     }
+
+    /** 失败分类：网络类可以原地重试，校验类要重下，落盘失败得看存储 */
+    enum class Failure { Network, Checksum, Storage }
+
+    /** 下载进度：百分比给进度条，字节数给「3.1 MB / 8.4 MB」 */
+    data class Progress(val percent: Int, val doneBytes: Long, val totalBytes: Long)
 
     private const val HASH_FAIL = "安装包校验未通过（文件可能下载不完整或已被替换），已删除，请重试"
 
@@ -68,14 +74,14 @@ object ApkDownloader {
         url: String,
         version: String,
         expectedSha256: String? = null,
-        onProgress: (Int) -> Unit
+        onProgress: (Progress) -> Unit
     ): DownloadResult = withContext(Dispatchers.IO) {
         val finalFile = fileFor(context, version)
 
         // 上次已经下完（用户可能在系统安装页取消了），校验通过才复用
         if (finalFile.exists() && finalFile.length() > 0) {
             if (ApkHash.matches(finalFile, expectedSha256)) {
-                onProgress(100)
+                onProgress(Progress(100, finalFile.length(), finalFile.length()))
                 return@withContext DownloadResult.Ok(finalFile)
             }
             finalFile.delete()
@@ -83,20 +89,21 @@ object ApkDownloader {
 
         val tmp = File(dir(context), "$PREFIX$version.apk.part")
         tmp.delete()
-        var ok = false
+        var failure: String? = null
         try {
             val call = Http.client.newCall(Request.Builder().url(url).build())
-            ok = call.execute().use { resp -> write(resp, tmp, onProgress) }
+            failure = call.execute().use { resp -> write(resp, tmp, onProgress) }
         } catch (t: Throwable) {
             Log.w(TAG, "download error", t)
+            failure = "下载失败，请检查网络后重试"
         }
-        if (!ok) {
+        if (failure != null) {
             tmp.delete()
-            return@withContext DownloadResult.Failed("下载失败，请检查网络后重试")
+            return@withContext DownloadResult.Failed(failure, Failure.Network)
         }
         if (!ApkHash.matches(tmp, expectedSha256)) {
             tmp.delete()
-            return@withContext DownloadResult.Failed(HASH_FAIL)
+            return@withContext DownloadResult.Failed(HASH_FAIL, Failure.Checksum)
         }
         if (finalFile.exists()) finalFile.delete()
         if (tmp.renameTo(finalFile)) {
@@ -104,17 +111,20 @@ object ApkDownloader {
             DownloadResult.Ok(finalFile)
         } else {
             tmp.delete()
-            DownloadResult.Failed("下载失败，请检查网络后重试")
+            DownloadResult.Failed("无法保存安装包，请检查存储空间后重试", Failure.Storage)
         }
     }
 
-    /** 流式写入临时文件，写完返回 true */
-    private fun write(resp: Response, dst: File, onProgress: (Int) -> Unit): Boolean {
+    /**
+     * 流式写入临时文件。
+     * 返回 null 表示成功；否则返回能直接展示给用户的原因（带 HTTP 状态码，便于判断是 404 还是断网）。
+     */
+    private fun write(resp: Response, dst: File, onProgress: (Progress) -> Unit): String? {
         if (!resp.isSuccessful) {
             Log.w(TAG, "download failed: HTTP ${resp.code}")
-            return false
+            return "下载失败（HTTP ${resp.code}），请稍后重试或到 Releases 页手动下载"
         }
-        val body = resp.body ?: return false
+        val body = resp.body ?: return "下载失败（服务器没有返回内容），请稍后重试"
         val total = body.contentLength()
         val buf = ByteArray(32 * 1024)
         var done = 0L
@@ -131,14 +141,14 @@ object ApkDownloader {
                 val p = (done * 100 / total).toInt()
                 if (p == lastEmit) continue
                 lastEmit = p
-                onProgress(p)
+                onProgress(Progress(p, done, total))
             }
         } finally {
             runCatching { os.close() }
             runCatching { input.close() }
         }
         // 服务端没给 Content-Length 时进度一直是 0，这里补一次完成态
-        if (lastEmit != 100) onProgress(100)
-        return true
+        if (lastEmit != 100) onProgress(Progress(100, done, total))
+        return null
     }
 }

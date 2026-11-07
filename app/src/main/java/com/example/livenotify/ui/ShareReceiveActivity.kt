@@ -21,8 +21,14 @@ class ShareReceiveActivity : Activity() {
         val text = extractText(intent)
         // android:theme=Theme.NoDisplay 要求不 setContentView，且必须尽快 finish
         val forward = Intent(this, MainActivity::class.java).apply {
-            // 已经开着 App 时复用同一个主页实例，避免分享一次叠一层 Activity
-            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            // 本页跑在独立任务里（manifest 的 taskAffinity=""），想把主页送回它自己的任务
+            // 必须带 NEW_TASK；再配 CLEAR_TOP + SINGLE_TOP 复用已有实例、走 onNewIntent，
+            // 这样分享一次不会叠一层 Activity。
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
             if (text != null) putExtra(EXTRA_SHARED_TEXT, text)
         }
         startActivity(forward)

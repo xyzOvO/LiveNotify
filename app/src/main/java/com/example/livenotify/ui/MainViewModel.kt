@@ -11,6 +11,7 @@ import com.example.livenotify.Graph
 import com.example.livenotify.data.EasterEggs
 import com.example.livenotify.data.Settings
 import com.example.livenotify.data.StreamerEntity
+import com.example.livenotify.monitor.MonitorEngine
 import com.example.livenotify.monitor.MonitorService
 import com.example.livenotify.monitor.NotificationHelper
 import com.example.livenotify.monitor.resumeBaseline
@@ -67,10 +68,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     sealed interface AddResult {
         data class Success(val nickname: String) : AddResult
         data class Error(val message: String) : AddResult
+
+        /**
+         * 已解析出平台和主播信息，但**还没落库**——等用户在确认弹窗里点「确认添加」。
+         * 这一步不动任何本地数据，用户发现粘错了可以直接返回修改。
+         */
+        data class Ready(
+            val entity: StreamerEntity,
+            val platformName: String,
+            /** 平台内的展示 ID：B 站是 UID，抖音是抖音号，斗鱼 / 虎牙是房间号 */
+            val displayId: String,
+            /** 与 displayId 不同时才单独列出的房间号（B 站的 UID 和房间号是两回事） */
+            val roomNo: String?,
+            val isLive: Boolean,
+            val liveTitle: String
+        ) : AddResult
     }
 
-    /** 解析输入 → 拉取一次快照 → 落库。添加时若正在开播，也不会立刻推送（等下一场开播才提醒） */
-    suspend fun add(raw: String, forcePlatformId: String?): AddResult {
+    /**
+     * 第一步：解析输入并拉一次主播信息，**只返回候选、不写库**。
+     *
+     * 以前一步到位直接落库，粘错链接就会悄悄关注一个不认识的人；
+     * 拆成「识别 → 确认」两步，用户能在写库前看清要关注的是谁。
+     */
+    suspend fun resolve(raw: String, forcePlatformId: String?): AddResult {
         // 分享文案常带中文（「【xx的直播间】https://...」），先提取出链接/房间号
         val input = ShareText.extract(raw)
         val platform = forcePlatformId?.let { PlatformRegistry.get(it) }
@@ -127,7 +148,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             lastLiveStartAt = snap.liveStartAt,
             lastCheckedAt = System.currentTimeMillis()
         )
-        if (dao.insert(entity) == -1L) return AddResult.Error("该主播已在关注列表中")
+        // B 站的 UID 与房间号是两个号：房间号从 roomUrl 末段取，和 displayId 相同就不重复展示
+        val roomNo = snap.roomUrl.substringAfterLast('/')
+            .substringBefore('?')
+            .takeIf { it.isNotBlank() && it.all(Char::isDigit) && it != snap.displayId }
+        return AddResult.Ready(
+            entity = entity,
+            platformName = platform.displayName,
+            displayId = snap.displayId,
+            roomNo = roomNo,
+            isLive = snap.state == LiveState.LIVE,
+            liveTitle = snap.title
+        )
+    }
+
+    /** 第二步：用户确认后才真正落库。这里再查一次重，防止确认期间别处已经加过 */
+    suspend fun confirmAdd(entity: StreamerEntity): AddResult {
+        if (dao.findByAnchor(entity.platformId, entity.anchorId) != null) {
+            return AddResult.Error("该主播已在关注列表中")
+        }
+        val fresh = entity.copy(lastCheckedAt = System.currentTimeMillis())
+        if (dao.insert(fresh) == -1L) return AddResult.Error("该主播已在关注列表中")
         val monitoring = settings.value.monitorEnabled
         if (monitoring) {
             MonitorService.start(getApplication())
@@ -135,13 +176,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             MonitorService.refresh(getApplication())
         }
         // 监控关闭时得说清楚，否则用户会以为加上了就会自动提醒
-        _toast.value = if (monitoring) "已关注 ${snap.nickname}"
-        else "已关注 ${snap.nickname}，但后台检测已关闭，不会自动提醒"
+        _toast.value = if (monitoring) "已关注 ${fresh.nickname}"
+        else "已关注 ${fresh.nickname}，但后台检测已关闭，不会自动提醒"
         // 命中配置就排队弹一句，落款用接口返回的真实昵称
-        EasterEggs.find(platform.id, anchorId, snap.displayId)?.let { hit ->
-            _egg.value = hit.copy(nickname = snap.nickname)
+        EasterEggs.find(fresh.platformId, fresh.anchorId, fresh.displayId)?.let { hit ->
+            _egg.value = hit.copy(nickname = fresh.nickname)
         }
-        return AddResult.Success(snap.nickname)
+        return AddResult.Success(fresh.nickname)
     }
 
     // ── 关注列表备份 / 恢复 ─────────────────────────────────────────
@@ -154,7 +195,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 导入结果：逐条处理，单条失败不影响其余条目 */
-    data class ImportReport(val added: Int, val skipped: Int, val failed: List<String>)
+    data class ImportReport(
+        val added: Int,
+        val skipped: Int,
+        val failed: List<String>,
+        /** 写库阶段失败、整批回滚，此时 added 一定是 0 */
+        val rolledBack: Boolean = false
+    )
 
     /**
      * 导入备份。不直接把 JSON 字段塞进数据库——那会把旧设备的开播状态、
@@ -172,6 +219,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         var added = 0
         var skipped = 0
         val failed = ArrayList<String>()
+        val pending = ArrayList<StreamerEntity>()
         for (e in data.entries) {
             val platform = PlatformRegistry.get(e.platformId)
             if (platform == null) {
@@ -215,10 +263,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 roomUrl = snap.roomUrl
             )
             val entity = resumeBaseline(fresh, snap, System.currentTimeMillis(), enabled = e.enabled)
-            if (dao.insert(entity) == -1L) {
-                skipped++
-            } else {
-                added++
+            pending.add(entity)
+        }
+
+        // 写库放到最后一次性完成：中途崩溃或写入失败都不会留下「只导进一半」的列表。
+        // 取不到快照的主播在上一阶段已明确跳过并记录了原因，本来就不该进这次写入。
+        if (pending.isNotEmpty()) {
+            try {
+                dao.insertAll(pending)
+                added = pending.size
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                // 事务已整体回滚，一条都没写进去；设置也不再改动，保持「什么都没发生」
+                return ImportReport(
+                    added = 0,
+                    skipped = skipped,
+                    failed = failed + "写入本地数据库失败，已回滚（未新增任何主播）",
+                    rolledBack = true
+                )
             }
         }
         // 设置最后写：某些项（监控开关）会影响服务启停，别让中途状态反复横跳
@@ -334,9 +397,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _refreshing.value = true
         try {
             val r = Graph.engine.runOnce()
-            _toast.value = when {
-                r.checked == 0 -> "暂无关注的主播"
-                else -> "已检测 ${r.checked} 位" + (if (r.errors > 0) "，${r.errors} 项异常" else "，一切正常")
+            _toast.value = when (r.skip) {
+                MonitorEngine.SkipReason.NO_NETWORK ->
+                    "有 ${r.total} 位主播，当前没有可用网络，本轮已跳过"
+                MonitorEngine.SkipReason.WIFI_ONLY ->
+                    "有 ${r.total} 位主播，当前不是 Wi-Fi，本轮已跳过"
+                null -> when {
+                    r.total == 0 -> "暂无关注的主播"
+                    else -> buildString {
+                        append("已检测 ${r.checked} 位")
+                        if (r.errors > 0) append("，${r.errors} 项异常")
+                        if (r.pending > 0) append("，${r.pending} 条提醒待补发")
+                        if (r.errors == 0 && r.pending == 0) append("，一切正常")
+                    }
+                }
             }
         } catch (ce: CancellationException) {
             throw ce
@@ -371,9 +445,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         object Idle : UpdateState
         object Checking : UpdateState
         object UpToDate : UpdateState
-        /** downloading=true 时 percent 为进度；否则展示更新说明与下载按钮 */
-        data class Available(val info: ReleaseInfo, val downloading: Boolean = false, val percent: Int = 0) : UpdateState
-        data class Failed(val message: String) : UpdateState
+
+        /** downloading=true 时展示进度；done/total 用于「3.1 MB / 8.4 MB」 */
+        data class Available(
+            val info: ReleaseInfo,
+            val downloading: Boolean = false,
+            val percent: Int = 0,
+            val doneBytes: Long = 0L,
+            val totalBytes: Long = 0L
+        ) : UpdateState
+
+        /** 失败也保留 info，用户才能原地重试；[failure] 决定给「重试」还是「去备份」 */
+        data class Failed(
+            val message: String,
+            val info: ReleaseInfo? = null,
+            val failure: UpdateFailure = UpdateFailure.Unknown
+        ) : UpdateState
+    }
+
+    /**
+     * 更新失败分类。
+     * [retryable] 决定界面给不给「重试」——签名不一致重试一百次也一样装不上。
+     */
+    enum class UpdateFailure(val retryable: Boolean) {
+        /** 断网、HTTP 错误、连接中断 */
+        Network(true),
+
+        /** 下载完整性（hash 不符）或安装包解析失败 */
+        Checksum(true),
+
+        /** 写文件失败（存储空间 / 权限） */
+        Storage(true),
+
+        /** 签名不一致或读不到签名：只能卸载重装，重试无意义 */
+        Signature(false),
+
+        /** 下错附件 / 版本不对 / 系统里没有安装器 */
+        Version(false),
+
+        /** 未授权「安装未知应用」，授权后重试即可 */
+        InstallPermission(true),
+
+        Unknown(true)
     }
 
     private val _update = MutableStateFlow<UpdateState>(UpdateState.Idle)
@@ -381,7 +494,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val updateLimiter = com.example.livenotify.net.RateLimiter(5_000L)
 
-    fun dismissUpdate() { _update.value = UpdateState.Idle }
+    /**
+     * 「以后再说」不只是关掉当前弹窗：把版本记下来，之后自动检查到这个版本不再打扰。
+     * 手动点「检查更新」仍会正常显示，用户改主意时随时能升。
+     *
+     * 普通失败关闭时**不**记版本：用户只是暂时不装，下次启动该提醒还是要提醒。
+     * 但签名不一致是个例外——不卸载就永远装不上，反复弹只会变成骚扰，直接按「不再提醒」处理。
+     */
+    fun dismissUpdate() {
+        val info = when (val st = _update.value) {
+            is UpdateState.Available -> st.info
+            is UpdateState.Failed -> st.info.takeIf { st.failure == UpdateFailure.Signature }
+            else -> null
+        }
+        _update.value = UpdateState.Idle
+        if (info != null) {
+            viewModelScope.launch { Graph.settings.setIgnoredVersionCode(info.versionCode) }
+        }
+    }
 
     /** 手动检查更新：无论结果如何都给提示 */
     fun checkUpdate() = viewModelScope.launch {
@@ -406,6 +536,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 用户已经手动查过（或正在下载）就不要用自动检查的结果覆盖
         if (_update.value !is UpdateState.Idle) return@launch
         val info = UpdateApi.latest() ?: return@launch
+        // 点过「以后再说」的版本不再自动弹，免得每次启动都拦一次
+        if (info.versionCode == Graph.settings.current().ignoredVersionCode) return@launch
         if (info.versionCode > BuildConfig.VERSION_CODE.toLong()) {
             _update.value = UpdateState.Available(info)
         }
@@ -418,10 +550,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val file = when (val r = ApkDownloader.download(
             getApplication(), info.apkUrl, info.versionName, info.sha256
         ) { p ->
-            _update.value = UpdateState.Available(info, downloading = true, percent = p)
+            _update.value = UpdateState.Available(
+                info = info,
+                downloading = true,
+                percent = p.percent,
+                doneBytes = p.doneBytes,
+                totalBytes = p.totalBytes
+            )
         }) {
             is ApkDownloader.DownloadResult.Failed -> {
-                _update.value = UpdateState.Failed(r.reason)
+                _update.value = UpdateState.Failed(
+                    message = r.reason,
+                    info = info,
+                    failure = when (r.failure) {
+                        ApkDownloader.Failure.Network -> UpdateFailure.Network
+                        ApkDownloader.Failure.Checksum -> UpdateFailure.Checksum
+                        ApkDownloader.Failure.Storage -> UpdateFailure.Storage
+                    }
+                )
                 return@launch
             }
             is ApkDownloader.DownloadResult.Ok -> r.file
@@ -430,22 +576,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         when (val checked = ApkInstaller.check(getApplication(), file, info.versionCode)) {
             is ApkInstaller.ApkCheck.Rejected -> {
                 runCatching { file.delete() }
-                _update.value = UpdateState.Failed(checked.reason)
+                _update.value = UpdateState.Failed(
+                    message = checked.reason,
+                    info = info,
+                    failure = when (checked.failure) {
+                        ApkInstaller.CheckFailure.SignatureMismatch,
+                        ApkInstaller.CheckFailure.MissingSignature -> UpdateFailure.Signature
+                        ApkInstaller.CheckFailure.MissingFile,
+                        ApkInstaller.CheckFailure.BrokenArchive -> UpdateFailure.Checksum
+                        ApkInstaller.CheckFailure.WrongPackage,
+                        ApkInstaller.CheckFailure.VersionMismatch,
+                        ApkInstaller.CheckFailure.AlreadyInstalled -> UpdateFailure.Version
+                    }
+                )
                 return@launch
             }
             is ApkInstaller.ApkCheck.Ok -> Unit
         }
         if (!ApkInstaller.canInstall(getApplication())) {
             ApkInstaller.openInstallPermission(getApplication())
-            _update.value = UpdateState.Failed("请先在打开的页面里允许「安装未知应用」，再回来重试")
+            _update.value = UpdateState.Failed(
+                "还差一步：在刚打开的页面里允许「安装未知应用」，回来点「重试」即可，安装包已下载好。",
+                info,
+                UpdateFailure.InstallPermission
+            )
             return@launch
         }
         if (!ApkInstaller.install(getApplication(), file)) {
-            _update.value = UpdateState.Failed("没有找到可用的安装程序，请到 Releases 页手动下载")
+            _update.value = UpdateState.Failed(
+                "系统里没有可用的安装程序，请到 Releases 页手动下载",
+                info,
+                UpdateFailure.Version
+            )
             return@launch
         }
         // 安装页已推到前台，关掉弹窗；用户返回时若没装成，可在设置页再点一次（会复用已下载的包）
         _update.value = UpdateState.Idle
+    }
+
+    /** 失败后原地重试：复用同一份 Release 信息，已下好的包会先校验再决定是否重下 */
+    fun retryUpdate() {
+        val info = (_update.value as? UpdateState.Failed)?.info ?: return
+        downloadUpdate(info)
     }
 
     fun setDouyinCookie(c: String) = viewModelScope.launch {

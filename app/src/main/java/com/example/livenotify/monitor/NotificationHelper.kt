@@ -163,8 +163,18 @@ object NotificationHelper {
         }
     }
 
-    /** 开播通知：标题=主播名，内容=直播间标题，点击跳转直播间。仅实际发布后返回 true。 */
-    fun notifyLive(context: Context, streamer: StreamerEntity, snapshot: Snapshot): Boolean {
+    /**
+     * 开播通知：标题=主播名，内容=直播间标题，点击跳转直播间。仅实际发布后返回 true。
+     *
+     * @param lateByMs 补发时距第一次尝试已过去多久；>0 表示这条不是实时的，
+     *   文案改成「正在直播」并注明已开播多久，避免用户以为主播刚上播。
+     */
+    fun notifyLive(
+        context: Context,
+        streamer: StreamerEntity,
+        snapshot: Snapshot,
+        lateByMs: Long = 0L
+    ): Boolean {
         if (!canNotify(context)) return false
 
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(snapshot.roomUrl)).apply {
@@ -180,15 +190,22 @@ object NotificationHelper {
 
         val platformName = PlatformRegistry.get(streamer.platformId)?.displayName ?: streamer.platformId
         val title = snapshot.title.ifBlank { "开播啦" }
+        val late = PendingNotify.lateHint(lateByMs)
+        // 补发时主播已经播了一会儿，说「开播了」会误导
+        val headline = if (late != null) "${streamer.nickname} 正在直播" else "${streamer.nickname} 开播了"
+        val bigText = buildString {
+            append(platformName)
+            append(" · ")
+            append(title)
+            if (late != null) append('\n').append(late)
+            append("\n点击前往直播间")
+        }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_LIVE)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("${streamer.nickname} 开播了")
+            .setContentTitle(headline)
             .setContentText(title)
-            .setStyle(
-                NotificationCompat.BigTextStyle()
-                    .bigText("$platformName · $title\n点击前往直播间")
-            )
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
             .setContentIntent(pi)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -223,13 +240,26 @@ object NotificationHelper {
     }
 
     /** 常驻通知。hidden=true 时改投最低可见度渠道，状态栏不再弹出常规条目。 */
-    fun monitorNotification(context: Context, text: String, count: Int, hidden: Boolean) =
+    fun monitorNotification(
+        context: Context,
+        text: String,
+        count: Int,
+        hidden: Boolean,
+        paused: Boolean = false
+    ) =
         NotificationCompat.Builder(
             context,
             if (hidden) CHANNEL_MONITOR_SILENT else CHANNEL_MONITOR
         )
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(if (hidden) "正在后台检测 $count 位主播" else "正在检测 $count 位主播")
+            // 没有网络（或「仅 Wi-Fi」待机）时别说「正在检测」——实际一次请求都没发
+            .setContentTitle(
+                when {
+                    paused -> "已暂停检测 · $count 位主播"
+                    hidden -> "正在后台检测 $count 位主播"
+                    else -> "正在检测 $count 位主播"
+                }
+            )
             .setContentText(text)
             .setContentIntent(mainPendingIntent(context))
             .setOngoing(true)

@@ -23,6 +23,13 @@ interface StreamerDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(entity: StreamerEntity): Long
 
+    /**
+     * 批量写入，要么全进要么一条都不进（Room 会把一次 insert 包在事务里）。
+     * 导入备份时用：中途写失败不能留下「只导进一半」的关注列表。
+     */
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertAll(entities: List<StreamerEntity>)
+
     @Update
     suspend fun update(entity: StreamerEntity)
 

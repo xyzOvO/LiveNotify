@@ -2,6 +2,9 @@ package com.example.livenotify.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -13,6 +16,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,10 +33,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -69,18 +78,28 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -88,11 +107,15 @@ import coil.compose.AsyncImage
 import com.example.livenotify.R
 import com.example.livenotify.data.EasterEggs
 import com.example.livenotify.data.StreamerEntity
+import com.example.livenotify.monitor.MonitorEngine
 import com.example.livenotify.monitor.NotificationHelper
 import com.example.livenotify.platform.PlatformRegistry
+import com.example.livenotify.update.ReleaseNotes
+import com.example.livenotify.update.UpdateApi
 import com.example.livenotify.util.ShareText
 import com.example.livenotify.util.Format
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 
 /** 各平台官方图标（圆形徽标：iTunes 512px App 图标 / 官方 favicon 生成） */
@@ -127,6 +150,9 @@ fun MainScreen(
     val updateState by vm.update.collectAsStateWithLifecycle()
     // 界面显示的是「服务真的在跑」，不是「设置里开着」
     val monitorRunning by vm.monitorRunning.collectAsStateWithLifecycle()
+    // 实时网络快照：断网 / 「仅 Wi-Fi」下走流量时，主页状态行要立刻改口，
+    // 不能等下一轮轮询（那中间的几分钟界面等于在撒谎）
+    val net = rememberNetSnapshot()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -151,11 +177,12 @@ fun MainScreen(
     }
 
     // ── 搜索与筛选：纯 UI 派生，保持 vm.streamers 是完整列表（后台检测与常驻通知都靠它）
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     var platformFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var liveOnly by rememberSaveable { mutableStateOf(false) }
-    /** 少于 8 位时默认不占地方，但留一个搜索入口，别让功能变成摆设 */
-    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val searchFocus = remember { FocusRequester() }
     val visible = remember(list, query, platformFilter, liveOnly) {
         val q = query.trim()
         list.filter { s ->
@@ -166,7 +193,34 @@ fun MainScreen(
                 (!liveOnly || (s.enabled && s.isLive && !s.missing))
         }
     }
-    val filtering = query.isNotBlank() || platformFilter != null || liveOnly || searchExpanded
+    val hasFilter = query.isNotBlank() || platformFilter != null || liveOnly
+
+    // 关闭搜索 = 结束这一轮筛选：条件和面板一起清掉，避免「关了搜索但列表还是筛过的」
+    val closeSearch: () -> Unit = {
+        query = ""
+        platformFilter = null
+        liveOnly = false
+        searchOpen = false
+        keyboard?.hide()
+    }
+    // 展开后自动聚焦并弹键盘；先等一帧，确保输入框已经进入组合
+    LaunchedEffect(searchOpen) {
+        if (searchOpen) {
+            withFrameNanos { }
+            runCatching { searchFocus.requestFocus() }
+            keyboard?.show()
+        }
+    }
+    // 搜索展开时返回键只收搜索，别直接退出 App
+    BackHandler(enabled = searchOpen) { closeSearch() }
+
+    val listState = rememberLazyListState()
+    // 一滚列表就收键盘：搜索时键盘占掉半屏，翻结果时它只会挡路
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }
+            .filter { it }
+            .collect { keyboard?.hide() }
+    }
 
     var showAdd by remember { mutableStateOf(false) }
     /** 从系统分享带进来的文案，用于预填添加框；null 表示手工点开的空白框 */
@@ -209,13 +263,16 @@ fun MainScreen(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { addInitialText = null; showAdd = true },
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("添加关注") },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
-            )
+            // 搜索/筛选时用不到添加，收起来免得键盘弹出后压住结果
+            if (!searchOpen) {
+                ExtendedFloatingActionButton(
+                    onClick = { addInitialText = null; showAdd = true },
+                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text = { Text("添加关注") },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            }
         }
     ) { padding ->
         PullToRefreshBox(
@@ -226,8 +283,10 @@ fun MainScreen(
                 .fillMaxSize()
         ) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 96.dp)
+                // 搜索时不显示 FAB，底部留白也收掉，别让结果区凭空空一截
+                contentPadding = PaddingValues(bottom = if (searchOpen) 24.dp else 96.dp)
             ) {
                 item {
                     HeroHeader(
@@ -235,6 +294,7 @@ fun MainScreen(
                         liveCount = list.count { it.enabled && it.isLive },
                         pausedCount = list.count { !it.enabled },
                         monitoring = settings.monitorEnabled && monitorRunning,
+                        skip = MonitorEngine.skipReason(settings.wifiOnly, net),
                         refreshing = refreshing,
                         onRefresh = { vm.checkNow() },
                         onOpenSettings = onOpenSettings
@@ -246,6 +306,8 @@ fun MainScreen(
                         enabled = settings.monitorEnabled,
                         intervalSec = settings.pollIntervalSec,
                         lastCheck = lastCheck,
+                        // 当前处于失败状态的主播数：让「一直在重试」这件事看得见
+                        failedCount = list.count { it.enabled && it.errorCount > 0 },
                         onToggle = vm::setMonitorEnabled
                     )
                 }
@@ -278,7 +340,7 @@ fun MainScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp),
+                                .padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
@@ -288,12 +350,13 @@ fun MainScreen(
                             )
                             Spacer(Modifier.weight(1f))
                             Text(
-                                "点击或长按管理",
+                                if (searchOpen && hasFilter) "${visible.size} / ${list.size} 位"
+                                else "点击或长按管理",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
                             )
-                            if (list.size < 8 && !filtering) {
-                                IconButton(onClick = { searchExpanded = true }) {
+                            if (!searchOpen) {
+                                IconButton(onClick = { searchOpen = true }) {
                                     Icon(
                                         Icons.Default.Search,
                                         contentDescription = "搜索关注列表",
@@ -303,22 +366,54 @@ fun MainScreen(
                             }
                         }
                     }
-                    // 关注数不多时搜索框是负担，只在必要时出现；有筛选条件时也保留以便清除
-                    if (list.size >= 8 || filtering) {
-                        item {
-                            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                                OutlinedTextField(
-                                    value = query,
-                                    onValueChange = { query = it },
-                                    label = { Text("搜索昵称或房间号") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Spacer(Modifier.height(8.dp))
-                                FlowRow(
-                                    modifier = Modifier.fillMaxWidth(),
+                    if (searchOpen) {
+                        // 吸顶：往下翻结果时搜索框和「取消」始终在，不用滚回顶部才能退出
+                        stickyHeader {
+                            Surface(color = MaterialTheme.colorScheme.background) {
+                                Column(Modifier.padding(start = 16.dp, end = 8.dp, bottom = 4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    OutlinedTextField(
+                                        value = query,
+                                        onValueChange = { query = it },
+                                        placeholder = { Text("搜索昵称或房间号") },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Default.Search,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.outline,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        },
+                                        trailingIcon = {
+                                            IconButton(
+                                                onClick = {
+                                                    if (query.isNotEmpty()) query = "" else closeSearch()
+                                                }
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Close,
+                                                    contentDescription = if (query.isNotEmpty()) "清空输入" else "关闭搜索",
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        },
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(12.dp),
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                        keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .focusRequester(searchFocus)
+                                    )
+                                    TextButton(onClick = closeSearch) { Text("取消") }
+                                }
+                                // 平台多、屏窄，chips 单行横向滚动，别让筛选区吃掉半屏
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     FilterChip(
                                         selected = platformFilter == null,
@@ -341,6 +436,7 @@ fun MainScreen(
                                     )
                                 }
                             }
+                            }
                         }
                     }
                     if (visible.isEmpty()) {
@@ -356,15 +452,24 @@ fun MainScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.outline
                                 )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "换个关键词，或放宽筛选条件",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+                                )
                                 Spacer(Modifier.height(8.dp))
-                                TextButton(
-                                    onClick = {
-                                        query = ""
-                                        platformFilter = null
-                                        liveOnly = false
-                                        searchExpanded = false
-                                    }
-                                ) { Text("清除筛选") }
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    TextButton(onClick = closeSearch) { Text("清除筛选") }
+                                    // 搜不到也可能是根本没关注：给一个直接去添加的口子
+                                    TextButton(
+                                        onClick = {
+                                            closeSearch()
+                                            addInitialText = null
+                                            showAdd = true
+                                        }
+                                    ) { Text("添加关注") }
+                                }
                             }
                         }
                     } else {
@@ -397,13 +502,44 @@ fun MainScreen(
         EasterEggDialog(e = e, onDismiss = { vm.consumeEgg() })
     }
 
-    // 有新版本：下载中显示进度，完成后自动跳安装页
-    (updateState as? MainViewModel.UpdateState.Available)?.let { st ->
-        UpdateDialog(
-            state = st,
-            onDownload = { vm.downloadUpdate(st.info) },
-            onDismiss = { vm.dismissUpdate() }
-        )
+    // 新版本提示：下载 → 进度 → 失败留在弹窗里可重试。
+    // 弹窗的开关由本地状态控制而不是只看 UpdateState：失败后状态是 Failed，
+    // 若仍按 Available 渲染，弹窗会在下载失败的一瞬间消失，用户什么提示都看不到。
+    var updateDialogOpen by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(updateState) {
+        when (updateState) {
+            is MainViewModel.UpdateState.Available -> updateDialogOpen = true
+            is MainViewModel.UpdateState.Idle,
+            is MainViewModel.UpdateState.UpToDate -> updateDialogOpen = false
+            else -> Unit
+        }
+    }
+    if (updateDialogOpen) {
+        when (val st = updateState) {
+            is MainViewModel.UpdateState.Available -> UpdateDialog(
+                state = st,
+                onDownload = { vm.downloadUpdate(st.info) },
+                onDismiss = {
+                    updateDialogOpen = false
+                    vm.dismissUpdate()
+                }
+            )
+            is MainViewModel.UpdateState.Failed -> UpdateFailedDialog(
+                state = st,
+                onRetry = { vm.retryUpdate() },
+                onOpenReleases = { openLink(context, UpdateApi.RELEASES_PAGE) },
+                onOpenBackup = {
+                    updateDialogOpen = false
+                    vm.dismissUpdate()
+                    onOpenSettings()
+                },
+                onDismiss = {
+                    updateDialogOpen = false
+                    vm.dismissUpdate()
+                }
+            )
+            else -> Unit
+        }
     }
 
     // 长按操作面板
@@ -468,6 +604,37 @@ fun MainScreen(
     }
 }
 
+/**
+ * 主页顶部的一句状态。
+ *
+ * 跳过检测时（没网 / 「仅 Wi-Fi」下不是 Wi-Fi）这里原来仍写「N 位都很安静」，
+ * 用户会以为已经检测过、只是没人开播——实际一次请求都没发。
+ * 所以跳过原因存在时改口「等待网络 / 等待 Wi-Fi」，且绝不说「安静」。
+ */
+internal fun homeStatusLine(
+    monitoring: Boolean,
+    total: Int,
+    liveCount: Int,
+    pausedCount: Int,
+    skip: MonitorEngine.SkipReason?
+): String = buildString {
+    append(if (monitoring) "监控中" else "已暂停")
+    append(" · ")
+    when {
+        // 服务没跑时「等待网络」没有意义，「已暂停」本身就是原因
+        monitoring && skip == MonitorEngine.SkipReason.WIFI_ONLY ->
+            append("等待 Wi-Fi · $total 位待检测")
+        monitoring && skip == MonitorEngine.SkipReason.NO_NETWORK ->
+            append("等待网络 · $total 位待检测")
+        total == 0 && pausedCount == 0 -> append("暂无关注")
+        total == 0 -> append("全部已暂停")
+        liveCount > 0 -> append("$liveCount / $total 位正在直播")
+        else -> append("$total 位都很安静")
+    }
+    // 「全部已暂停」已经说明了一切，别再拼一遍「N 位已暂停」
+    if (pausedCount > 0 && total > 0) append(" · $pausedCount 位已暂停")
+}
+
 /** 顶部渐变区：标题 + 概览 + 刷新/设置 */
 @Composable
 private fun HeroHeader(
@@ -476,6 +643,8 @@ private fun HeroHeader(
     /** 已暂停的关注数，单独提示，避免和「正在监控」混在一起 */
     pausedCount: Int = 0,
     monitoring: Boolean,
+    /** 最近一轮被跳过的原因；非空说明检测没真正跑，状态行要改口 */
+    skip: MonitorEngine.SkipReason? = null,
     refreshing: Boolean,
     onRefresh: () -> Unit,
     onOpenSettings: () -> Unit
@@ -501,18 +670,14 @@ private fun HeroHeader(
                 )
                 Spacer(Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Dot(color = if (monitoring) okColor() else cs.outline, size = 7)
+                    // 跳过时检测实际没在跑，绿点会误导；用灰点 + 文字说明
+                    Dot(
+                        color = if (monitoring && skip == null) okColor() else cs.outline,
+                        size = 7
+                    )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        buildString {
-                            append(if (monitoring) "监控中" else "已暂停")
-                            append(" · ")
-                            if (total == 0 && pausedCount == 0) append("暂无关注")
-                            else if (total == 0) append("全部已暂停")
-                            else if (liveCount > 0) append("$liveCount / $total 位正在直播")
-                            else append("$total 位都很安静")
-                            if (pausedCount > 0) append(" · $pausedCount 位已暂停")
-                        },
+                        homeStatusLine(monitoring, total, liveCount, pausedCount, skip),
                         style = MaterialTheme.typography.bodyMedium,
                         color = cs.onPrimaryContainer.copy(alpha = 0.72f)
                     )
@@ -550,6 +715,7 @@ private fun MonitorBar(
     enabled: Boolean,
     intervalSec: Int,
     lastCheck: Long,
+    failedCount: Int,
     onToggle: (Boolean) -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
@@ -577,6 +743,15 @@ private fun MonitorBar(
                     style = MaterialTheme.typography.labelSmall,
                     color = cs.outline
                 )
+                if (enabled && failedCount > 0) {
+                    Spacer(Modifier.height(3.dp))
+                    // 说清楚「还在重试」和「不会提醒」的区别，别让用户以为只是网慢
+                    Text(
+                        "$failedCount 位主播信息获取失败，正在自动重试；连续失败会标为「失效」",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = cs.error.copy(alpha = 0.85f)
+                    )
+                }
             }
             Switch(
                 checked = enabled,
@@ -667,6 +842,7 @@ private fun StreamerCard(
     // 暂停的卡片一律不显示「直播中」高亮，避免看起来还在被监控
     val live = s.enabled && s.isLive && !s.missing
     val shape = RoundedCornerShape(18.dp)
+    val haptic = LocalHapticFeedback.current
 
     Card(
         modifier = Modifier
@@ -674,7 +850,14 @@ private fun StreamerCard(
             .padding(horizontal = 16.dp, vertical = 5.dp)
             .clip(shape)
             .alpha(if (s.enabled) 1f else 0.62f)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    // 长按要等 500ms 才弹面板，中间没有触觉反馈会让人以为没按到
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongClick()
+                }
+            ),
         shape = shape,
         colors = CardDefaults.cardColors(
             containerColor = if (live) LiveAccent.copy(alpha = 0.055f) else cardSurface(0.4f)
@@ -840,22 +1023,7 @@ private fun AvatarWithBadge(s: StreamerEntity, live: Boolean) {
                 ),
             contentAlignment = Alignment.Center
         ) {
-            if (!s.avatarUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = s.avatarUrl,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                )
-            } else {
-                Text(
-                    s.nickname.take(1),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = cs.outline
-                )
-            }
+            AvatarImage(url = s.avatarUrl, name = s.nickname, size = 48.dp)
         }
         // 平台官方 logo 徽标
         val iconRes = platformIconRes(s.platformId)
@@ -1007,99 +1175,256 @@ private fun AddStreamerDialog(
     var forced by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    /** 非空 = 已识别出主播，切到确认界面；此时还没有写库 */
+    var ready by remember { mutableStateOf<MainViewModel.AddResult.Ready?>(null) }
     val scope = rememberCoroutineScope()
-    // 对话框已经开着时又收到一次分享，把新文案换上去，别让 remember 的初值挡住
+    // 对话框已经开着时又收到一次分享：换成新文案并退回输入步骤
     LaunchedEffect(initialText) {
-        if (!initialText.isNullOrBlank()) text = initialText
+        if (!initialText.isNullOrBlank()) {
+            text = initialText
+            ready = null
+            error = null
+        }
     }
 
+    val pending = ready
     AlertDialog(
         // 请求进行中点外部/返回键会让协程被取消、添加静默中断，busy 时直接忽略
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("添加关注") },
+        title = { Text(if (pending == null) "添加关注" else "确认添加") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it; error = null },
-                    label = { Text("链接 / 直播间号 / 分享文案") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("可直接粘贴App分享出来的整段文案") }
-                )
-                // 实时识别预览：粘贴后立刻知道会被解析成哪个平台，粘错马上能看到
-                val extracted = remember(text) {
-                    val t = text.trim()
-                    if (t.isBlank()) "" else ShareText.extract(t)
-                }
-                val detectedName = remember(extracted) {
-                    if (extracted.isBlank()) null
-                    else PlatformRegistry.detect(extracted)?.displayName
-                }
-                if (initialText != null) {
-                    Text(
-                        "来自分享，已自动提取；确认无误再点「添加」",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                if (detectedName != null) {
-                    Text(
-                        "已识别：$detectedName" +
-                            if (extracted != text.trim()) " · $extracted" else "",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = okColor(),
-                        maxLines = 2
-                    )
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    // 「自动」单独一行：最常用，放最上面
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        PlatformChip("自动", forced == null) { forced = null }
-                    }
-                    // 手动指定平台换行显示在「自动」下面。用 FlowRow 而不是 Row：
-                    // 窄屏（≤360dp）四个 chip 一行放不下，Row 会把尾部直接裁掉。
-                    FlowRow(
+            if (pending == null) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { text = it; error = null },
+                        label = { Text("链接 / 直播间号 / 分享文案") },
+                        singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        PlatformChip("B站", forced == "bilibili") { forced = "bilibili" }
-                        PlatformChip("抖音", forced == "douyin") { forced = "douyin" }
-                        PlatformChip("斗鱼", forced == "douyu") { forced = "douyu" }
-                        PlatformChip("虎牙", forced == "huya") { forced = "huya" }
+                        placeholder = { Text("可直接粘贴App分享出来的整段文案") }
+                    )
+                    // 实时识别预览：粘贴后立刻知道会被解析成哪个平台，粘错马上能看到
+                    val extracted = remember(text) {
+                        val t = text.trim()
+                        if (t.isBlank()) "" else ShareText.extract(t)
+                    }
+                    val detectedName = remember(extracted) {
+                        if (extracted.isBlank()) null
+                        else PlatformRegistry.detect(extracted)?.displayName
+                    }
+                    if (initialText != null) {
+                        Text(
+                            "来自分享，已自动提取；确认无误再点「识别主播」",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    if (detectedName != null) {
+                        Text(
+                            "已识别：$detectedName" +
+                                if (extracted != text.trim()) " · $extracted" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = okColor(),
+                            maxLines = 2
+                        )
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        // 「自动」单独一行：最常用，放最上面
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            PlatformChip("自动", forced == null) { forced = null }
+                        }
+                        // 手动指定平台换行显示在「自动」下面。用 FlowRow 而不是 Row：
+                        // 窄屏（≤360dp）四个 chip 一行放不下，Row 会把尾部直接裁掉。
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            PlatformChip("B站", forced == "bilibili") { forced = "bilibili" }
+                            PlatformChip("抖音", forced == "douyin") { forced = "douyin" }
+                            PlatformChip("斗鱼", forced == "douyu") { forced = "douyu" }
+                            PlatformChip("虎牙", forced == "huya") { forced = "huya" }
+                        }
+                    }
+                    if (busy) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("正在获取主播信息…", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    error?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
                 }
-                if (busy) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("正在获取主播信息…", style = MaterialTheme.typography.labelSmall)
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ReadyBody(pending)
+                    error?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
-                }
-                error?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
         confirmButton = {
-            TextButton(
-                enabled = text.isNotBlank() && !busy,
-                onClick = {
-                    scope.launch {
-                        busy = true
-                        error = null
-                        when (val r = vm.add(text.trim(), forced)) {
-                            is MainViewModel.AddResult.Success -> onDismiss()
-                            is MainViewModel.AddResult.Error -> error = r.message
+            if (pending == null) {
+                TextButton(
+                    enabled = text.isNotBlank() && !busy,
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            error = null
+                            when (val r = vm.resolve(text.trim(), forced)) {
+                                is MainViewModel.AddResult.Ready -> ready = r
+                                is MainViewModel.AddResult.Error -> error = r.message
+                                else -> Unit
+                            }
+                            busy = false
                         }
-                        busy = false
                     }
-                }
-            ) { Text("添加") }
+                ) { Text(if (busy) "识别中…" else "识别主播") }
+            } else {
+                TextButton(
+                    enabled = !busy,
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            error = null
+                            when (val r = vm.confirmAdd(pending.entity)) {
+                                is MainViewModel.AddResult.Success -> onDismiss()
+                                is MainViewModel.AddResult.Error -> {
+                                    // 落库被拒（多半是别处已经加过）就退回输入步骤并说明原因
+                                    error = r.message
+                                    ready = null
+                                }
+                                else -> Unit
+                            }
+                            busy = false
+                        }
+                    }
+                ) { Text(if (busy) "添加中…" else "确认添加") }
+            }
         },
-        dismissButton = { TextButton(enabled = !busy, onClick = onDismiss) { Text("取消") } }
+        dismissButton = {
+            if (pending == null) {
+                TextButton(enabled = !busy, onClick = onDismiss) { Text("取消") }
+            } else {
+                TextButton(enabled = !busy, onClick = { ready = null }) { Text("返回修改") }
+            }
+        }
     )
+}
+
+/** 确认添加时的「这是谁」卡片：平台、昵称、ID、当前状态，最后才是确认按钮 */
+@Composable
+private fun ReadyBody(r: MainViewModel.AddResult.Ready) {
+    val cs = MaterialTheme.colorScheme
+    // 不同平台 ID 的叫法不一样，别把抖音号也写成 UID
+    val idLabel = when (r.entity.platformId) {
+        "bilibili" -> "UID"
+        "douyin" -> "抖音号"
+        else -> "房间号"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            r.platformName,
+            style = MaterialTheme.typography.labelLarge,
+            color = cs.primary,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.width(8.dp))
+        Surface(
+            color = cs.primaryContainer,
+            contentColor = cs.onPrimaryContainer,
+            shape = RoundedCornerShape(50)
+        ) {
+            Text(
+                "识别成功",
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+            )
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        AvatarImage(
+            url = r.entity.avatarUrl,
+            name = r.entity.nickname,
+            size = 46.dp,
+            bg = cs.surfaceVariant
+        )
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(
+                r.entity.nickname,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                buildString {
+                    append("$idLabel：${r.displayId}")
+                    r.roomNo?.let { append(" · 房间号：$it") }
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline,
+                maxLines = 2
+            )
+        }
+    }
+    Text(
+        when {
+            r.isLive && r.liveTitle.isNotBlank() -> "正在直播：${r.liveTitle}"
+            r.isLive -> "正在直播"
+            else -> "当前未开播"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = if (r.isLive) LiveAccent else cs.outline,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+    )
+    Text(
+        "将关注该主播，后台开始检测开播状态。",
+        style = MaterialTheme.typography.labelSmall,
+        color = cs.outline
+    )
+}
+
+/**
+ * 圆形头像。底层先画昵称首字，图片没地址或加载失败时自然露出来，
+ * 不会再出现「网络一差就是一块空白圆」。
+ */
+@Composable
+private fun AvatarImage(
+    url: String?,
+    name: String,
+    size: Dp,
+    bg: Color = Color.Transparent,
+    textStyle: TextStyle? = null
+) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(bg),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            name.take(1),
+            style = textStyle ?: MaterialTheme.typography.titleMedium,
+            color = cs.outline
+        )
+        if (!url.isNullOrBlank()) {
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
 }
 
 @Composable
@@ -1163,7 +1488,7 @@ private fun EasterEggDialog(e: EasterEggs.Egg, onDismiss: () -> Unit) {
     )
 }
 
-/** 新版本提示：先展示版本说明，点「立即更新」后原地变成下载进度 */
+/** 新版本提示：版本对照 + 更新日志；点「立即更新」后原地变成下载进度 */
 @Composable
 private fun UpdateDialog(
     state: MainViewModel.UpdateState.Available,
@@ -1171,30 +1496,37 @@ private fun UpdateDialog(
     onDismiss: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
+    val info = state.info
     AlertDialog(
         // 下载中不允许关掉，避免协程被取消后留下半截文件
         onDismissRequest = { if (!state.downloading) onDismiss() },
-        title = { Text("发现新版本 v${state.info.versionName}") },
+        title = { Text(if (state.downloading) "正在更新" else "发现新版本") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "当前 v${com.example.livenotify.BuildConfig.VERSION_NAME} → v${info.versionName}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = cs.primary
+                )
                 if (state.downloading) {
                     LinearProgressIndicator(
                         progress = { state.percent / 100f },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text(
-                        "正在下载 ${state.percent}%",
+                        progressText(state.percent, state.doneBytes, state.totalBytes),
                         style = MaterialTheme.typography.bodySmall,
                         color = cs.outline
                     )
                 } else {
+                    NotesBox(ReleaseNotes.format(info.notes))
                     Text(
-                        state.info.notes.ifBlank { "问题修复与体验优化" }.take(300),
+                        packageLine(info.sizeBytes),
                         style = MaterialTheme.typography.bodySmall,
-                        color = cs.onSurfaceVariant
+                        color = cs.outline
                     )
                     Text(
-                        "下载完成后会拉起系统安装页，点「安装」即可覆盖升级，关注列表不会丢。",
+                        "点「以后再说」后，这个版本不再自动提醒；仍可在设置页手动检查。",
                         style = MaterialTheme.typography.bodySmall,
                         color = cs.outline
                     )
@@ -1208,4 +1540,60 @@ private fun UpdateDialog(
             if (!state.downloading) TextButton(onClick = onDismiss) { Text("以后再说") }
         }
     )
+}
+
+/**
+ * 更新失败。
+ *
+ * 失败原因决定给哪条出路：网络/校验问题重试就够；签名不一致重试一百次也装不上，
+ * 只能先导备份再卸载重装，所以按钮换成「去导出备份」。
+ */
+@Composable
+private fun UpdateFailedDialog(
+    state: MainViewModel.UpdateState.Failed,
+    onRetry: () -> Unit,
+    onOpenReleases: () -> Unit,
+    onOpenBackup: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val signature = state.failure == MainViewModel.UpdateFailure.Signature
+    val canRetry = state.failure.retryable && state.info != null
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (signature) "无法覆盖安装" else "更新没有完成") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(state.message, style = MaterialTheme.typography.bodyMedium)
+                if (signature) {
+                    Text(
+                        "卸载重装后，把刚导出的备份导入，关注列表与设置都会恢复。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            when {
+                signature -> TextButton(onClick = onOpenBackup) { Text("去导出备份") }
+                canRetry -> TextButton(onClick = onRetry) { Text("重试") }
+                else -> TextButton(onClick = onOpenReleases) { Text("打开 Releases") }
+            }
+        },
+        dismissButton = {
+            Row {
+                if (signature) TextButton(onClick = onOpenReleases) { Text("打开 Releases") }
+                TextButton(onClick = onDismiss) { Text("关闭") }
+            }
+        }
+    )
+}
+
+/** 设置页/弹窗里的外链跳转：交给系统选浏览器或 GitHub 客户端 */
+private fun openLink(context: android.content.Context, url: String) {
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
 }

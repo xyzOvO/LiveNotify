@@ -97,7 +97,7 @@ object UpdateApi {
         )
     }
 
-    /** 兜底：只看 Releases 页的重定向目标，拿不到更新说明 */
+    /** 兜底：只看 Releases 页的重定向目标拿 tag，更新说明再去 Atom 源补一次 */
     private suspend fun fromHtml(): ReleaseInfo? {
         val finalUrl = Http.finalUrl("$RELEASES_PAGE/latest", limiter) ?: return null
         val tag = Regex("""/releases/tag/(v\d+\.\d+\.\d+)$""").find(finalUrl.trimEnd('/'))?.groupValues?.get(1)
@@ -114,9 +114,21 @@ object UpdateApi {
             apkUrl = "https://github.com/$OWNER/$REPO/releases/download/$tag/$name",
             assetName = name,
             sizeBytes = 0L,
-            notes = "",
+            notes = fetchNotes(tag),
             publishedAt = ""
         )
+    }
+
+    /**
+     * API 被限流 / 屏蔽时（实测部分网络直接 403），仍尽量把更新日志给到用户。
+     * 拿不到就退回空串，界面会显示「暂无更新说明」——不能因为这个失败拖垮整个检查。
+     */
+    private suspend fun fetchNotes(tag: String): String = try {
+        val xml = Http.get("https://github.com/$OWNER/$REPO/releases.atom", limiter = limiter)
+        ReleasesAtom.notesForTag(xml, tag)
+    } catch (t: Throwable) {
+        Log.w(TAG, "fetch release notes from atom failed", t)
+        ""
     }
 
     /**

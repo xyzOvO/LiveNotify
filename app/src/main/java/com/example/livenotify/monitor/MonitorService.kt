@@ -80,6 +80,9 @@ class MonitorService : Service() {
         if (loopJob?.isActive == true) return
         loopJob = scope.launch {
             while (isActive) {
+                // 固定周期调度的基准点：本轮开始（不是结束）。
+                // 检测耗时被算进周期里，用户设 2 分钟就真的是「这轮开始到下轮开始」2 分钟。
+                val tickStart = System.currentTimeMillis()
                 try {
                     val enabled = try {
                         settings.current().monitorEnabled.also { lastEnabled = it }
@@ -96,9 +99,18 @@ class MonitorService : Service() {
                     }
                     val report = engine.runOnce()
                     updateForeground(report)
-                    val delayMs = engine.nextDelayMs()
-                    Log.d(TAG, "checked=${report.checked} notified=${report.notified} err=${report.errors} next=${delayMs}ms")
-                    delay(delayMs)
+                    val period = engine.nextDelayMs()
+                    val now = System.currentTimeMillis()
+                    // 单轮超过一个周期就跳过错过的格点，绝不连续补跑
+                    val nextAt = PollSchedule.nextTickAt(tickStart, period, now)
+                    val wait = (nextAt - now).coerceIn(1_000L, PollSchedule.MAX_MS)
+                    Log.d(
+                        TAG,
+                        "tick check=${report.checked} notified=${report.notified} err=${report.errors}" +
+                            " pending=${report.pending}" +
+                            " took=${report.durationMs}ms period=${period}ms wait=${wait}ms skip=${report.skip}"
+                    )
+                    delay(wait)
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (t: Throwable) {
@@ -110,26 +122,46 @@ class MonitorService : Service() {
     }
 
     private suspend fun updateForeground(report: MonitorEngine.Report) {
-        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(report.finishedAt))
         // 数量取「当前库里的」而不是本轮检测的数量：检测结果可能落在增删主播之前，
         // 用实时值才能保证通知里的「共 N 位」永远和列表一致。
         val count = currentCount()
-        val text = when {
-            report.skipped -> "等待 WiFi（当前移动网络）"
-            count == 0 -> "暂无关注，最近检测 $time"
-            else -> "最近检测 $time · 共 $count 位" +
+        val time = clockOf(com.example.livenotify.Graph.engine.lastRunAt)
+        val text = report.skip?.let { skipLine(it, time) } ?: when {
+            count == 0 -> if (time != null) "暂无关注，最近检测 $time" else "暂无关注"
+            else -> "最近检测 ${time ?: "—"} · 共 $count 位" +
                 (if (report.errors > 0) " · ${report.errors} 项异常" else "")
         }
-        publish(text, count)
+        publish(text, count, paused = report.skip != null)
+    }
+
+    /**
+     * 跳过的原因要写在通知上，否则用户只会看到「最近检测」停在半小时前，
+     * 以为应用坏了。带上上次真正检测的时刻，一眼能看出是网络问题。
+     */
+    private fun skipLine(skip: MonitorEngine.SkipReason, lastTime: String?): String {
+        val head = when (skip) {
+            MonitorEngine.SkipReason.WIFI_ONLY -> "等待 Wi-Fi（当前不是 Wi-Fi）"
+            MonitorEngine.SkipReason.NO_NETWORK -> "等待网络（无可用连接）"
+        }
+        return if (lastTime != null) "$head · 最近检测 $lastTime" else head
     }
 
     /** 关注列表变化时刷新常驻通知：重新读一次数量与上次检测时间 */
     private suspend fun refreshForeground() {
         val count = currentCount()
         val last = com.example.livenotify.Graph.engine.lastRunAt
-        val time = if (last > 0L) SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(last)) else "—"
-        publish(if (count == 0) "暂无关注" else "最近检测 $time · 共 $count 位", count)
+        val time = clockOf(last)
+        val skip = com.example.livenotify.Graph.engine.lastSkip.value
+        val text = when {
+            skip != null -> skipLine(skip, time)
+            count == 0 -> if (time != null) "暂无关注，最近检测 $time" else "暂无关注"
+            else -> "最近检测 ${time ?: "—"} · 共 $count 位"
+        }
+        publish(text, count, paused = skip != null)
     }
+
+    private fun clockOf(ms: Long): String? =
+        if (ms <= 0L) null else SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(ms))
 
     private suspend fun currentCount(): Int = try {
         com.example.livenotify.Graph.db.streamerDao().listEnabled().size
@@ -139,7 +171,7 @@ class MonitorService : Service() {
         0
     }
 
-    private suspend fun publish(text: String, count: Int) {
+    private suspend fun publish(text: String, count: Int, paused: Boolean = false) {
         // Android 13 起通知是运行时权限，被拒时 notify() 会抛 SecurityException。
         // 判断必须写在本方法内，lint 才会认可；前台服务那条由 startForeground 发出，不受影响。
         val granted =
@@ -161,7 +193,7 @@ class MonitorService : Service() {
             NotificationManagerCompat.from(this)
                 .notify(
                     NotificationHelper.MONITOR_ID,
-                    NotificationHelper.monitorNotification(this, text, count, hidden)
+                    NotificationHelper.monitorNotification(this, text, count, hidden, paused)
                 )
         }
     }

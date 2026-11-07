@@ -109,4 +109,31 @@ class BackupFormatTest {
         )
         assertTrue(d.entries.isEmpty())
     }
+
+    @Test
+    fun `损坏的 JSON 直接拒绝而不是导进半份`() {
+        for (bad in listOf("", "{", """{"app":"LiveNotify",,}""", "<html></html>")) {
+            try {
+                BackupFormat.decode(bad)
+                fail("应当拒绝：$bad")
+            } catch (e: BadBackup) {
+                assertTrue(e.message!!.isNotBlank())
+            }
+        }
+    }
+
+    @Test
+    fun `缺少字段或版本非法的备份不会崩`() {
+        // 版本 0 / 负数都当作不支持；streamers 缺失时按空列表处理
+        for (v in listOf(0, -1)) {
+            try {
+                BackupFormat.decode("""{"app":"LiveNotify","version":$v}""")
+                fail("版本 $v 应当拒绝")
+            } catch (e: BadBackup) {
+                assertTrue(e.message!!.contains("不兼容"))
+            }
+        }
+        val noList = BackupFormat.decode("""{"app":"LiveNotify","version":1}""")
+        assertTrue(noList.entries.isEmpty())
+    }
 }

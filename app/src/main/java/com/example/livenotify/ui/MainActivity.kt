@@ -61,7 +61,11 @@ class MainActivity : ComponentActivity() {
                 val vm = ViewModelProvider(this)[MainViewModel::class.java]
                 val plat = intent.getStringExtra("platform")
                 lifecycleScope.launch {
-                    val r = vm.add(raw, plat)
+                    // 调试入口保持一步到位：识别通过就直接落库，方便脚本化验证
+                    val resolved = vm.resolve(raw, plat)
+                    val r = if (resolved is MainViewModel.AddResult.Ready) {
+                        vm.confirmAdd(resolved.entity)
+                    } else resolved
                     Log.i("LiveNotifyDebug", "auto_add [$raw] -> $r")
                 }
             }

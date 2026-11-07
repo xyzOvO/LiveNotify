@@ -29,6 +29,18 @@ data class StreamerEntity(
     val lastLiveEndAt: Long = 0L,
     val lastNotifiedAt: Long = 0L,   // 上次推送时间，用于冷却
     val lastNotifiedLiveStart: Long = 0L, // 已推送过的场次标识，防止同一场重复推送
+
+    /**
+     * 待补发的开播提醒。
+     *
+     * 通知权限或「开播提醒」渠道被关掉时 [com.example.livenotify.monitor.NotificationHelper.notifyLive]
+     * 返回 false，但本次检测已经把 isLive 写成 true；下一轮看到「本来就在播、场次没变」，
+     * 不再给通知候选——这一场就永远提醒不到了。所以发送失败必须留下待办，之后每轮补试，
+     * 直到成功、换场次或超过有效期。
+     */
+    val pendingNotifySession: Long = 0L, // 场次 key（秒）；0 = 平台不给开播时间，按同一场处理
+    val pendingNotifySince: Long = 0L,   // 第一次发送失败的时刻（毫秒），用于有效期与「已开播多久」
+
     val lastCheckedAt: Long = 0L,
 
     val missing: Boolean = false,    // 主播/房间不存在

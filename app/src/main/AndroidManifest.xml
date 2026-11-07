@@ -71,12 +71,21 @@
           用独立 Activity 而不是给 MainActivity 改 launchMode——后者会影响从通知/桌面回来的既有行为。
           noHistory + excludeFromRecents 保证它不在返回栈里留痕。
         -->
+        <!--
+          分享中转页。
+          taskAffinity="" 是关键：不能让这个页面成为 App 任务的根 Activity。
+          否则第一次冷启动分享之后，任务根的 baseIntent 就变成了这条 SEND Intent；
+          用户之后再分享，系统会认为「任务已存在」，直接把任务提到前台而**不启动中转页**，
+          分享文本被静默丢弃（实测日志里只有 START ShareReceiveActivity、没有后续的
+          START MainActivity）。放进独立任务后，每次分享都会真正执行这里的 onCreate。
+        -->
         <activity
             android:name=".ui.ShareReceiveActivity"
             android:exported="true"
             android:label="@string/share_receive_label"
             android:noHistory="true"
             android:excludeFromRecents="true"
+            android:taskAffinity=""
             android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

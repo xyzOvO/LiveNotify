@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -37,6 +38,8 @@ data class Settings(
     val hideMonitorNotification: Boolean = false,
     /** 启动时自动检查一次新版本（只提示，不会自动下载安装） */
     val autoUpdateCheck: Boolean = true,
+    /** 用户点过「以后再说」的版本；自动检查到这个版本就不再弹，手动检查仍可看到 */
+    val ignoredVersionCode: Long = 0L,
     /** 上次成功访问 B 站数据接口的域；空串表示还没记录，走默认主节点 */
     val statsApiOrigin: String = ""
 )
@@ -59,6 +62,7 @@ class SettingsRepository(private val context: Context) {
         val NOTIFY_VIBRATE = booleanPreferencesKey("notify_vibrate")
         val HIDE_MONITOR_NOTIFICATION = booleanPreferencesKey("hide_monitor_notification")
         val AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")
+        val IGNORED_VERSION = longPreferencesKey("ignored_version_code")
         val STATS_API_ORIGIN = stringPreferencesKey("stats_api_origin")
     }
 
@@ -84,6 +88,7 @@ class SettingsRepository(private val context: Context) {
                 notifyVibrate = p[Keys.NOTIFY_VIBRATE] ?: true,
                 hideMonitorNotification = p[Keys.HIDE_MONITOR_NOTIFICATION] ?: false,
                 autoUpdateCheck = p[Keys.AUTO_UPDATE_CHECK] ?: true,
+                ignoredVersionCode = p[Keys.IGNORED_VERSION] ?: 0L,
                 statsApiOrigin = p[Keys.STATS_API_ORIGIN] ?: ""
             )
         }
@@ -118,6 +123,11 @@ class SettingsRepository(private val context: Context) {
     suspend fun setNotifyVibrate(v: Boolean) = edit { it[Keys.NOTIFY_VIBRATE] = v }
     suspend fun setHideMonitorNotification(v: Boolean) = edit { it[Keys.HIDE_MONITOR_NOTIFICATION] = v }
     suspend fun setAutoUpdateCheck(v: Boolean) = edit { it[Keys.AUTO_UPDATE_CHECK] = v }
+
+    /** 记下用户不想再被提醒的版本（传 0 表示恢复提醒） */
+    suspend fun setIgnoredVersionCode(v: Long) = edit {
+        if (v <= 0L) it.remove(Keys.IGNORED_VERSION) else it[Keys.IGNORED_VERSION] = v
+    }
 
     /** 记住最近一次成功的数据接口域；传空串即清掉，下次重新从主节点开始试 */
     suspend fun setStatsApiOrigin(origin: String) = edit {

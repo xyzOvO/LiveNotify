@@ -39,7 +39,34 @@ object ApkInstaller {
     /** 安装包自检结果。任一项不通过都在拉起安装页之前拦下，给出能看懂的原因 */
     sealed interface ApkCheck {
         data class Ok(val versionCode: Long) : ApkCheck
-        data class Rejected(val reason: String) : ApkCheck
+        data class Rejected(val reason: String, val failure: CheckFailure) : ApkCheck
+    }
+
+    /**
+     * 失败原因分类。界面据此决定给什么出路：
+     * 下载类问题可以原地重试，签名问题重试多少次都没用，只能卸载重装。
+     */
+    enum class CheckFailure {
+        /** 文件不存在 / 为空 */
+        MissingFile,
+
+        /** 解析不了，多半是没下完 */
+        BrokenArchive,
+
+        /** 下成了别的应用 */
+        WrongPackage,
+
+        /** 读不到任一侧的签名，无法判断 */
+        MissingSignature,
+
+        /** 两侧签名不同，系统必然拒绝覆盖 */
+        SignatureMismatch,
+
+        /** 包内版本低于公告版本 */
+        VersionMismatch,
+
+        /** 不比当前版本高，装了也没意义 */
+        AlreadyInstalled
     }
 
     /**
@@ -54,7 +81,7 @@ object ApkInstaller {
     @Suppress("DEPRECATION")
     fun check(context: Context, file: File, expectedVersionCode: Long = 0L): ApkCheck {
         if (!file.exists() || file.length() <= 0L) {
-            return ApkCheck.Rejected("安装包不存在或为空，请重新下载")
+            return ApkCheck.Rejected("安装包不存在或为空，请重新下载", CheckFailure.MissingFile)
         }
 
         // 两个 flag 一起要：部分 ROM（实测 MIUI V12 / Android 10）拿 GET_SIGNING_CERTIFICATES
@@ -68,16 +95,25 @@ object ApkInstaller {
             pm.getPackageArchiveInfo(file.absolutePath, flags)
         } catch (t: Throwable) {
             null
-        } ?: return ApkCheck.Rejected("安装包无法解析，可能下载不完整，请重新下载")
+        } ?: return ApkCheck.Rejected(
+            "安装包无法解析，可能下载不完整，请重新下载",
+            CheckFailure.BrokenArchive
+        )
 
         val self = try {
             pm.getPackageInfo(context.packageName, flags)
         } catch (t: Throwable) {
             null
-        } ?: return ApkCheck.Rejected("无法读取本应用的签名信息，已中止安装")
+        } ?: return ApkCheck.Rejected(
+            "无法读取本应用的签名信息，已中止安装",
+            CheckFailure.MissingSignature
+        )
 
         if (archive.packageName != context.packageName) {
-            return ApkCheck.Rejected("下载到的不是本应用的安装包（包名 ${archive.packageName}）")
+            return ApkCheck.Rejected(
+                "下载到的不是本应用的安装包（包名 ${archive.packageName}）",
+                CheckFailure.WrongPackage
+            )
         }
 
         val incoming = signersOf(archive)
@@ -86,16 +122,26 @@ object ApkInstaller {
         // 拆成两句，别再让用户对着「安装包或本应用」猜是哪一边的问题
         if (incoming == null) {
             Log.w(TAG, "archive signers missing: ${signerDebug(archive)}")
-            return ApkCheck.Rejected("无法读取安装包的签名信息，已中止安装（可到 Releases 页手动下载）")
+            return ApkCheck.Rejected(
+                "读不到安装包的签名信息，无法确认它来自同一个开发者。可到 Releases 页手动下载后安装。",
+                CheckFailure.MissingSignature
+            )
         }
         if (current == null) {
             Log.w(TAG, "self signers missing: ${signerDebug(self)}")
-            return ApkCheck.Rejected("无法读取本应用的签名信息，已中止安装（可到 Releases 页手动下载）")
+            return ApkCheck.Rejected(
+                "读不到当前应用的签名信息，无法确认能否覆盖安装。可到 Releases 页手动下载后安装。",
+                CheckFailure.MissingSignature
+            )
         }
         if (!digest(incoming.first().toByteArray()).contentEquals(digest(current.first().toByteArray()))) {
+            // 这里必须说清「为什么」和「只能怎么办」：
+            // 用户手动去 Releases 下载同一个包，照样装不上，别再给无效建议。
             return ApkCheck.Rejected(
-                "安装包签名与当前应用不一致，系统会拒绝覆盖安装。" +
-                    "可到 Releases 页手动下载，或卸载本应用后重装（关注列表会丢失）。"
+                "安装包与当前应用不是同一个签名，Android 不允许覆盖安装。\n" +
+                    "常见原因是早前装过测试签名的版本。要继续只能先卸载本应用再装新包，" +
+                    "关注列表会丢失——建议先在设置页「关注列表备份」导出一份。",
+                CheckFailure.SignatureMismatch
             )
         }
 
@@ -106,11 +152,17 @@ object ApkInstaller {
 
         // 公告版本比包内版本高，说明下错了附件（Releases 里可能挂了别的包）
         if (expectedVersionCode > 0L && newCode < expectedVersionCode) {
-            return ApkCheck.Rejected("安装包版本（$newCode）低于公告版本（$expectedVersionCode），请重新下载")
+            return ApkCheck.Rejected(
+                "安装包版本（$newCode）低于公告版本（$expectedVersionCode），可能下错了附件，请重新下载",
+                CheckFailure.VersionMismatch
+            )
         }
         // 同版本或降级安装没有意义，系统也会拦；提前说清楚
         if (newCode <= selfCode) {
-            return ApkCheck.Rejected("安装包版本（$newCode）未高于当前版本（$selfCode），无需安装")
+            return ApkCheck.Rejected(
+                "安装包版本（$newCode）未高于当前版本（$selfCode），无需安装",
+                CheckFailure.AlreadyInstalled
+            )
         }
 
         return ApkCheck.Ok(newCode)

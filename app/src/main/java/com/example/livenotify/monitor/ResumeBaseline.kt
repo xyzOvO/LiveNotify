@@ -38,6 +38,9 @@ internal fun resumeBaseline(
         lastLiveStartAt = if (sessionKey > 0L) sessionKey else s.lastLiveStartAt,
         lastNotifiedLiveStart = sessionKey,
         lastNotifiedAt = now,
+        // 恢复关注 / 导入时不该把暂停期间攒下的待办补报一遍
+        pendingNotifySession = 0L,
+        pendingNotifySince = 0L,
         lastCheckedAt = now,
         missing = false,
         errorCount = 0,

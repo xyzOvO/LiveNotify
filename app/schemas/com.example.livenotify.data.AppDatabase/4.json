@@ -1,0 +1,177 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 4,
+    "identityHash": "f13f1a2dabe4947fce94f1122accc149",
+    "entities": [
+      {
+        "tableName": "streamers",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `platformId` TEXT NOT NULL, `anchorId` TEXT NOT NULL, `displayId` TEXT NOT NULL, `nickname` TEXT NOT NULL, `avatarUrl` TEXT, `title` TEXT NOT NULL, `note` TEXT NOT NULL, `roomUrl` TEXT NOT NULL, `isLive` INTEGER NOT NULL, `liveStreak` INTEGER NOT NULL, `liveStartAt` INTEGER NOT NULL, `lastLiveStartAt` INTEGER NOT NULL, `lastLiveEndAt` INTEGER NOT NULL, `lastNotifiedAt` INTEGER NOT NULL, `lastNotifiedLiveStart` INTEGER NOT NULL, `pendingNotifySession` INTEGER NOT NULL, `pendingNotifySince` INTEGER NOT NULL, `lastCheckedAt` INTEGER NOT NULL, `missing` INTEGER NOT NULL, `errorCount` INTEGER NOT NULL, `lastError` TEXT, `enabled` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "platformId",
+            "columnName": "platformId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "anchorId",
+            "columnName": "anchorId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayId",
+            "columnName": "displayId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nickname",
+            "columnName": "nickname",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "avatarUrl",
+            "columnName": "avatarUrl",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "roomUrl",
+            "columnName": "roomUrl",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isLive",
+            "columnName": "isLive",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "liveStreak",
+            "columnName": "liveStreak",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "liveStartAt",
+            "columnName": "liveStartAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastLiveStartAt",
+            "columnName": "lastLiveStartAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastLiveEndAt",
+            "columnName": "lastLiveEndAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastNotifiedAt",
+            "columnName": "lastNotifiedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastNotifiedLiveStart",
+            "columnName": "lastNotifiedLiveStart",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingNotifySession",
+            "columnName": "pendingNotifySession",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingNotifySince",
+            "columnName": "pendingNotifySince",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastCheckedAt",
+            "columnName": "lastCheckedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "missing",
+            "columnName": "missing",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "errorCount",
+            "columnName": "errorCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_streamers_platformId_anchorId",
+            "unique": true,
+            "columnNames": [
+              "platformId",
+              "anchorId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_streamers_platformId_anchorId` ON `${TABLE_NAME}` (`platformId`, `anchorId`)"
+          }
+        ],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'f13f1a2dabe4947fce94f1122accc149')"
+    ]
+  }
+}

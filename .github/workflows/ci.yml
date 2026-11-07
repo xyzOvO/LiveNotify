@@ -91,6 +91,55 @@ jobs:
       - name: 构建 Release APK
         run: ./gradlew assembleRelease
 
+      # 密钥在但装错了内容（过期 keystore、别人家的 key）时，上面的非空检查拦不住——
+      # 指纹必须与正式签名逐字一致。指纹算自本地 keystore/livenotify.jks：
+      #   keytool -list -v -keystore keystore/livenotify.jks
+      # 换密钥 = 所有旧用户都无法覆盖安装，必须显式更新这里并写进 Release 说明。
+      - name: 校验签名指纹
+        run: |
+          BT="$(ls -d "$ANDROID_HOME/build-tools/"*/ | sort | tail -1)"
+          ACTUAL="$("${BT}apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk \
+            | grep -m1 'SHA-256 digest' | awk '{print $NF}')"
+          EXPECTED="284d73dfe8925a302bde55fb0a348ee92fa0ffcd2d59f8854c21b2e38323a6f2"
+          echo "Release 包签名指纹: $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Release 包签名指纹与正式签名不符：$ACTUAL"
+            echo "::error::正式指纹应为 284d73df…23a6f2。请检查 KEYSTORE_BASE64 / KEY_ALIAS 指向的密钥，已中止发布。"
+            exit 1
+          fi
+
+      # tag 即版本：APK 里的 versionName / versionCode 必须与触发发布的 tag 一致，
+      # 且必须高于上一个版本，否则用户的应用内更新会报「低于当前版本」或装不上。
+      - name: 校验版本号与 Git Tag 一致
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          EXPECTED_NAME="${TAG#v}"
+          IFS='.' read -r MA MI PA <<< "$EXPECTED_NAME"
+          EXPECTED_CODE=$((MA * 10000 + MI * 100 + PA))
+
+          BT="$(ls -d "$ANDROID_HOME/build-tools/"*/ | sort | tail -1)"
+          BADGING="$("${BT}aapt2" dump badging app/build/outputs/apk/release/app-release.apk | grep -m1 'package:')"
+          ACTUAL_NAME="$(echo "$BADGING" | grep -o "versionName='[^']*'" | cut -d"'" -f2)"
+          ACTUAL_CODE="$(echo "$BADGING" | grep -o "versionCode='[0-9]*'" | cut -d"'" -f2)"
+
+          PREV_TAG="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          PREV_CODE=""
+          if [ -n "$PREV_TAG" ]; then
+            PREV="${PREV_TAG#v}"; IFS='.' read -r PM PMI PP <<< "$PREV"
+            PREV_CODE=$((PM * 10000 + PMI * 100 + PP))
+            if [ "$ACTUAL_CODE" -le "$PREV_CODE" ]; then
+              echo "::error::versionCode（$ACTUAL_CODE）未高于上一版 $PREV_TAG（$PREV_CODE），用户无法覆盖安装，已中止发布"
+              exit 1
+            fi
+          fi
+
+          if [ "$ACTUAL_NAME" != "$EXPECTED_NAME" ] || [ "$ACTUAL_CODE" != "$EXPECTED_CODE" ]; then
+            echo "::error::APK 版本（$ACTUAL_NAME / $ACTUAL_CODE）与 tag $TAG（$EXPECTED_NAME / $EXPECTED_CODE）不一致，已中止发布"
+            exit 1
+          fi
+          echo "版本校验通过：v$ACTUAL_NAME（versionCode $ACTUAL_CODE）"
+          [ -n "$PREV_CODE" ] && echo "覆盖安装校验通过：高于 $PREV_TAG（versionCode $PREV_CODE）"
+
       - name: 挂到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -6,6 +6,13 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Room 的 schema JSON 导出目录：每个版本的表结构都入库（app/schemas/）。
+// 关注列表是长期积累的个人数据，迁移写错一列就是静默丢数据——
+// 有版本快照才能 diff 出「这次到底改了什么」，迁移测试也据此断言最终列结构。
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 // release 签名：读取本地 keystore.properties（该文件与密钥都不入库）。
 // 没有密钥文件时自动回退 debug 签名——保证任何人克隆后都能构建出可安装的包。
 val keystoreProps = Properties().apply {
@@ -127,4 +134,6 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.6.0")
 
     testImplementation("junit:junit:4.13.2")
+    // 迁移测试用真实 SQLite 跑 ALTER TABLE（Robolectric 太重，sqlite-jdbc 够用且离线可测）
+    testImplementation("org.xerial:sqlite-jdbc:3.45.3.0")
 }

@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -73,10 +74,12 @@ import com.example.livenotify.bili.CareerStats
 import com.example.livenotify.bili.ChannelStats
 import com.example.livenotify.bili.DayStat
 import com.example.livenotify.bili.FansPoint
+import com.example.livenotify.bili.StatsCache
 import com.example.livenotify.bili.TrendMonth
 import com.example.livenotify.bili.UserAnalysis
 import com.example.livenotify.bili.UserEvent
 import com.example.livenotify.data.StreamerEntity
+import com.example.livenotify.util.Format
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -133,6 +136,14 @@ fun StatsScreen(
                     }
                 },
                 actions = {
+                    if (tab == 0) {
+                        IconButton(
+                            enabled = !ui.loading,
+                            onClick = { vm.reload() }
+                        ) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "刷新数据")
+                        }
+                    }
                     TextButton(onClick = { showUidDialog = true }) { Text("输入 UID") }
                 }
             )
@@ -167,8 +178,7 @@ fun StatsScreen(
             when (tab) {
                 0 -> ChannelTab(ui = ui, line = line, onRetry = { vm.reload() }, onOpenUid = { showUidDialog = true })
                 else -> UserTab(vm = vm, defaultUid = selectedUid, line = line)
-            }
-        }
+            }        }
     }
 
     if (showUidDialog) {
@@ -194,7 +204,8 @@ private fun ChannelTab(
 ) {
     val cs = MaterialTheme.colorScheme
     when {
-        ui.loading -> CenterBox { CircularProgressIndicator() }
+        // 有旧数据时不要整页变骨架屏：内容照旧，刷新状态由顶部那条提示表达
+        ui.channel == null && ui.loading -> CenterBox { CircularProgressIndicator() }
 
         ui.channel == null -> Column(
             modifier = Modifier
@@ -220,6 +231,7 @@ private fun ChannelTab(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            item { FreshnessBar(ui, onRetry) }
             item { ChannelHead(ui.channel, ui.career?.firstLiveAt.orEmpty()) }
             item { FansCard(ui.channel.fansHistory, ui.channel.fansCount) }
             if (ui.trend.isNotEmpty()) {
@@ -239,6 +251,60 @@ private fun ChannelTab(
                         color = cs.outline.copy(alpha = 0.7f)
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 数据新鲜度。
+ *
+ * 页面优先展示缓存、只有用户点刷新才请求，所以「这是什么时候的数据」
+ * 必须写在最上面——否则用户会把上周的粉丝数当成实时的。
+ */
+@Composable
+private fun FreshnessBar(ui: StatsViewModel.ChannelUi, onRefresh: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    // 每次进入组合取一次当前时间即可：这里只是判断是否过期，不需要秒级跳动
+    val stale = remember(ui.savedAt, ui.fromCache) { StatsCache.isStale(ui.savedAt, System.currentTimeMillis()) }
+    val whenText = if (ui.savedAt > 0L) Format.relative(ui.savedAt) else null
+    val showButton = ui.fromCache || stale || ui.error != null
+
+    Column {
+        when {
+            ui.error != null && ui.channel != null -> Text(
+                "刷新失败：${ui.error}" + (whenText?.let { " · 仍在显示 $it 的数据" } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.error
+            )
+
+            ui.fromCache && stale -> Text(
+                "缓存数据（$whenText），可能已经过期",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.error
+            )
+
+            ui.fromCache -> Text(
+                "缓存数据 · $whenText 更新",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline
+            )
+
+            ui.loading -> Text(
+                "正在刷新…" + (whenText?.let { " · 当前显示 $it 的数据" } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline
+            )
+
+            whenText != null -> Text(
+                "更新于 $whenText",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.outline
+            )
+        }
+        if (showButton) {
+            TextButton(onClick = onRefresh, contentPadding = PaddingValues(0.dp)) {
+                Text(if (ui.loading) "刷新中…" else "刷新")
             }
         }
     }
@@ -534,6 +600,10 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long, line: String) {
     LaunchedEffect(defaultUid) {
         if (defaultUid > 0L && uidText.isBlank()) uidText = defaultUid.toString()
     }
+    // 换主播 / 换时间范围时先把本地缓存亮出来：分析任务十几秒起步，不该每次重跑
+    LaunchedEffect(currentUid, rangeDays) {
+        vm.restoreAnalysis(currentUid, rangeDays)
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -616,6 +686,16 @@ private fun UserTab(vm: StatsViewModel, defaultUid: Long, line: String) {
                             }
                         ) {
                             Text(if (visibleAnalysis is StatsViewModel.AnalysisUi.Done) "重新分析" else "开始分析")
+                        }
+                        // 缓存结果必须标出「什么时候的」：用户可能半小时后来看同一份数字
+                        val done = visibleAnalysis as? StatsViewModel.AnalysisUi.Done
+                        if (done != null && done.fromCache) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "本地缓存 · ${Format.relative(done.savedAt)}，点「重新分析」取最新",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = cs.outline
+                            )
                         }
                     }
                 }

@@ -8,12 +8,15 @@ import com.example.livenotify.bili.BiliApiException
 import com.example.livenotify.bili.BiliStatsApi
 import com.example.livenotify.bili.CareerStats
 import com.example.livenotify.bili.ChannelStats
+import com.example.livenotify.bili.StatsCache
+import com.example.livenotify.bili.StatsCacheStore
 import com.example.livenotify.bili.StatsEndpoint
 import com.example.livenotify.bili.TrendMonth
 import com.example.livenotify.bili.UserAnalysis
 import com.example.livenotify.bili.UserEvent
 import com.example.livenotify.data.StreamerEntity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * B 站数据页的状态。
@@ -32,6 +36,9 @@ import kotlinx.coroutines.launch
 class StatsViewModel(app: Application) : AndroidViewModel(app) {
 
     private val dao = Graph.db.streamerDao()
+
+    /** 数据页的本地缓存：磁盘上按主播 / 按分析任务各存一份 */
+    private val cache = StatsCacheStore(app.applicationContext.filesDir)
 
     /** 数据接口当前线路，界面页脚直接显示，用户能看出自己是不是被切到了备用节点 */
     private val _lineLabel = MutableStateFlow(BiliStatsApi.lineLabel())
@@ -66,7 +73,11 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
         val channel: ChannelStats? = null,
         val trend: List<TrendMonth> = emptyList(),
         val career: CareerStats? = null,
-        val error: String? = null
+        val error: String? = null,
+        /** 这份数据是什么时候取回来的；0 表示还没有任何数据 */
+        val savedAt: Long = 0L,
+        /** 本次展示的是磁盘缓存（没有发起请求） */
+        val fromCache: Boolean = false
     )
 
     private val _channelUi = MutableStateFlow(ChannelUi())
@@ -74,13 +85,46 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
 
     private var channelJobToken = 0
 
-    /** 读取某个主播的概览、粉丝走势与生涯统计；三者互不影响，单个失败不拖垮整页 */
-    fun load(uid: Long) {
+    /**
+     * 读取某个主播的概览、粉丝走势与生涯统计。
+     *
+     * 有缓存就直接展示缓存，**不再自动请求**：这个数据源是第三方社区接口，
+     * 有 IP 频率限制，来回切主播不该每次都打一遍。要最新数据得用户自己点「刷新」。
+     * 缓存不存在（第一次看这个主播）时照常请求。
+     */
+    fun load(uid: Long, force: Boolean = false) {
         if (uid <= 0L) return
-        if (_channelUi.value.uid == uid && _channelUi.value.channel != null && !_channelUi.value.loading) return
+        val cur = _channelUi.value
+        if (!force && cur.uid == uid && cur.channel != null && !cur.loading) return
         val token = ++channelJobToken
-        _channelUi.value = ChannelUi(loading = true, uid = uid)
         viewModelScope.launch {
+            val keep = _channelUi.value.takeIf { it.uid == uid }
+            if (!force) {
+                val cached = withContext(Dispatchers.IO) { cache.readChannel(uid) }
+                if (token != channelJobToken) return@launch
+                if (cached != null) {
+                    _channelUi.value = ChannelUi(
+                        uid = uid,
+                        channel = cached.channel,
+                        trend = cached.trend,
+                        career = cached.career,
+                        savedAt = cached.savedAt,
+                        fromCache = true
+                    )
+                    return@launch
+                }
+            }
+            // 刷新时保留旧内容，只在顶部转圈：整页闪成骨架屏比看着旧数据更让人焦躁
+            _channelUi.value = ChannelUi(
+                loading = true,
+                uid = uid,
+                channel = keep?.channel,
+                trend = keep?.trend ?: emptyList(),
+                career = keep?.career,
+                savedAt = keep?.savedAt ?: 0L,
+                fromCache = keep?.channel != null
+            )
+
             var firstError: String? = null
             val result = coroutineScope {
                 val ch = async { runCatching { BiliStatsApi.channel(uid) } }
@@ -89,27 +133,52 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
                 Triple(ch.await(), tr.await(), ca.await())
             }
             if (token != channelJobToken) return@launch
-            val channel = result.first.getOrNull()
+            val fresh = result.first.getOrNull()
             if (result.first.isFailure) firstError = result.first.exceptionOrNull()?.userMessage()
+            // 服务端偶尔只回一半字段（实测刷新时 uName/faceUrl 会是空的）：
+            // 展示用的身份信息不能因为一次残缺响应就被清掉，否则界面只剩「UID xxx」
+            val prevChannel = keep?.channel
+            val channel = if (fresh != null && prevChannel != null) fresh.copy(
+                name = fresh.name.ifBlank { prevChannel.name },
+                faceUrl = fresh.faceUrl.ifBlank { prevChannel.faceUrl },
+                sign = fresh.sign.ifBlank { prevChannel.sign }
+            ) else fresh
             val trend = result.second.getOrElse { emptyList() }
             val career = result.third.getOrNull()
-            _channelUi.value = ChannelUi(
-                loading = false,
-                uid = uid,
-                channel = channel,
-                trend = trend,
-                career = career,
-                error = if (channel == null) firstError ?: "没有取到该主播的数据" else null
-            )
+            if (channel != null) {
+                val now = System.currentTimeMillis()
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        cache.writeChannel(
+                            StatsCache.ChannelEntry(now, channel, trend, career)
+                        )
+                    }
+                }
+                _channelUi.value = ChannelUi(
+                    loading = false, uid = uid, channel = channel,
+                    trend = trend, career = career, savedAt = now
+                )
+            } else {
+                // 请求失败：旧数据留着，只在上面挂一条失败原因
+                val prev = keep?.channel
+                _channelUi.value = ChannelUi(
+                    loading = false,
+                    uid = uid,
+                    channel = prev,
+                    trend = if (prev != null) keep.trend else emptyList(),
+                    career = if (prev != null) keep.career else null,
+                    savedAt = keep?.savedAt ?: 0L,
+                    fromCache = prev != null,
+                    error = firstError ?: "没有取到该主播的数据"
+                )
+            }
         }
     }
 
+    /** 用户主动刷新：绕过缓存重新请求 */
     fun reload() {
         val uid = _channelUi.value.uid
-        if (uid > 0) {
-            _channelUi.value = ChannelUi(uid = uid)
-            load(uid)
-        }
+        if (uid > 0) load(uid, force = true)
     }
 
     // ── 用户互动事件分析 ────────────────────────────────────────────
@@ -127,7 +196,11 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
             val data: UserAnalysis,
             /** 实际提交给服务端的时间窗口，界面要把它显示出来，否则数字没有口径 */
             val fromMs: Long,
-            val toMs: Long
+            val toMs: Long,
+            /** 结果保存时刻；0 表示这次刚取回来 */
+            val savedAt: Long = 0L,
+            /** 直接读的本地缓存，本次没有请求服务端 */
+            val fromCache: Boolean = false
         ) : AnalysisUi
 
         data class Failed(
@@ -149,10 +222,8 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * 分析某用户近 [days] 天的互动记录。
-     * 服务端按 uid 扫历史场次，属于重查询，必须由用户显式触发。
-     *
-     * [force] 为 true 时忽略缓存重新查询——「重新分析」按钮必须真的重新拉取，
-     * 否则用户点了一年也还是那份旧结果。
+     * 服务端按 uid 扫历史场次，属于重查询，必须由用户显式触发；
+     * 同一个「uid + 时间范围」有缓存时直接用缓存，[force] 才真的重新请求。
      */
     fun analyze(userId: Long, days: Int, force: Boolean = false) {
         if (userId <= 0L) return
@@ -168,19 +239,61 @@ class StatsViewModel(app: Application) : AndroidViewModel(app) {
         _analysis.value = AnalysisUi.Running(userId, 0, "创建分析任务…", days)
         analysisJob = viewModelScope.launch {
             try {
+                if (!force) {
+                    val cached = withContext(Dispatchers.IO) { cache.readAnalysis(userId, days) }
+                    if (cached != null && cached.userId == userId && cached.rangeDays == days) {
+                        _analysis.value = AnalysisUi.Done(
+                            userId, days, cached.data, cached.fromMs, cached.toMs,
+                            savedAt = cached.savedAt, fromCache = true
+                        )
+                        return@launch
+                    }
+                }
                 val (from, to) = rangeOf(days)
                 val data = BiliStatsApi.analyze(userId, from, to) { p, msg ->
                     _analysis.value = AnalysisUi.Running(userId, p, msg, days)
                 }
+                val now = System.currentTimeMillis()
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        cache.writeAnalysis(
+                            StatsCache.AnalysisEntry(userId, days, now, from, to, data)
+                        )
+                    }
+                }
                 cachedKey = key
                 cachedData = data
                 cachedRange = from to to
-                _analysis.value = AnalysisUi.Done(userId, days, data, from, to)
+                _analysis.value = AnalysisUi.Done(userId, days, data, from, to, savedAt = now)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
                 _analysis.value = AnalysisUi.Failed(userId, t.userMessage(), days)
             }
+        }
+    }
+
+    /**
+     * 切主播 / 切时间范围时先把缓存结果亮出来。
+     *
+     * 分析任务动辄十几秒，不该因为「换了个 Tab 再切回来」就重跑一遍。
+     * 只有当前没有对应结果时才读缓存，正在跑的任务不受影响。
+     */
+    fun restoreAnalysis(userId: Long, days: Int) {
+        if (userId <= 0L || days <= 0) return
+        val cur = _analysis.value
+        if (cur is AnalysisUi.Running) return
+        if (cur is AnalysisUi.Done && cur.userId == userId && cur.rangeDays == days) return
+        viewModelScope.launch {
+            val cached = withContext(Dispatchers.IO) { cache.readAnalysis(userId, days) } ?: return@launch
+            if (cached.userId != userId || cached.rangeDays != days) return@launch
+            val now = _analysis.value
+            if (now is AnalysisUi.Running) return@launch
+            if (now is AnalysisUi.Done && now.userId == userId && now.rangeDays == days) return@launch
+            _analysis.value = AnalysisUi.Done(
+                userId, days, cached.data, cached.fromMs, cached.toMs,
+                savedAt = cached.savedAt, fromCache = true
+            )
         }
     }
 
