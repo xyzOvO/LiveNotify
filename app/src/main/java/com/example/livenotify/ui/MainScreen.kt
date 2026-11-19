@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,8 +41,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -54,8 +61,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -68,6 +77,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -109,6 +119,7 @@ import com.example.livenotify.data.EasterEggs
 import com.example.livenotify.data.StreamerEntity
 import com.example.livenotify.monitor.MonitorEngine
 import com.example.livenotify.monitor.NotificationHelper
+import com.example.livenotify.monitor.PollSchedule
 import com.example.livenotify.platform.PlatformRegistry
 import com.example.livenotify.update.ReleaseNotes
 import com.example.livenotify.update.UpdateApi
@@ -137,6 +148,10 @@ fun MainScreen(
     permissionRevision: Int = 0,
     /** 打开 B 站数据页（传入该主播的 uid） */
     onOpenStats: (Long) -> Unit = {},
+    /** 打开开播历史页 */
+    onOpenHistory: () -> Unit = {},
+    /** 打开分组管理页 */
+    onOpenGroups: () -> Unit = {},
     /** 系统分享带进来的文案；只用于预填添加框，消费后由调用方置空 */
     sharedText: String? = null,
     onConsumeSharedText: () -> Unit = {}
@@ -153,6 +168,8 @@ fun MainScreen(
     // 实时网络快照：断网 / 「仅 Wi-Fi」下走流量时，主页状态行要立刻改口，
     // 不能等下一轮轮询（那中间的几分钟界面等于在撒谎）
     val net = rememberNetSnapshot()
+    // 实际检测间隔与设置页、后台引擎同一算法，界面不说「每 N 秒」这种会被网络倍数打破的假话
+    val effectiveIntervalSec = PollSchedule.plan(settings, net.kind, false).effectiveSec
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -181,22 +198,34 @@ fun MainScreen(
     var query by rememberSaveable { mutableStateOf("") }
     var platformFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var liveOnly by rememberSaveable { mutableStateOf(false) }
+    /** 分组筛选：null=全部，""=未分组，其它=组名 */
+    var groupFilter by rememberSaveable { mutableStateOf<String?>(null) }
     val keyboard = LocalSoftwareKeyboardController.current
     val searchFocus = remember { FocusRequester() }
     val visible = remember(list, query, platformFilter, liveOnly) {
         list.filter { s ->
             matchesSearchQuery(query, s.nickname, s.displayId, s.anchorId, s.note) &&
                 (platformFilter == null || s.platformId == platformFilter) &&
+                (groupFilter == null || s.group == groupFilter) &&
                 (!liveOnly || (s.enabled && s.isLive && !s.missing))
         }
     }
-    val hasFilter = query.isNotBlank() || platformFilter != null || liveOnly
+    val hasFilter = query.isNotBlank() || platformFilter != null || liveOnly || groupFilter != null
+
+    // ── 分组展开/折叠。搜索时不分组，直接平铺结果，避免分组头干扰查找 ──
+    val grouped = remember(visible, searchOpen) {
+        if (searchOpen) null else groupVisible(visible)
+    }
+    var collapsedGroups by rememberSaveable { mutableStateOf(setOf<String>()) }
+    val groupNames by vm.groups.collectAsStateWithLifecycle()
+    val groupCounts = remember(list) { list.groupBy { it.group }.mapValues { it.value.size } }
 
     // 关闭搜索 = 结束这一轮筛选：条件和面板一起清掉，避免「关了搜索但列表还是筛过的」
     val closeSearch: () -> Unit = {
         query = ""
         platformFilter = null
         liveOnly = false
+        groupFilter = null
         searchOpen = false
         keyboard?.hide()
     }
@@ -226,6 +255,14 @@ fun MainScreen(
     var actionFor by remember { mutableStateOf<StreamerEntity?>(null) }
     /** 恢复关注要联网取一次快照，期间锁住按钮避免重复点击 */
     var enabledBusy by remember { mutableStateOf(false) }
+
+    // ── 分组管理相关弹窗 ──
+    /** 分组管理总入口（新建 / 重命名 / 删除） */
+    var groupManageOpen by remember { mutableStateOf(false) }
+    /** 要把某位主播移到哪个组；null 表示没在移动 */
+    var moveFor by remember { mutableStateOf<StreamerEntity?>(null) }
+    /** 正在重命名的分组名 */
+    var renameFor by remember { mutableStateOf<String?>(null) }
 
     // 分享文案只在这里预填，绝不自动落库：仍然由用户看到识别结果后点「添加」
     LaunchedEffect(sharedText) {
@@ -294,6 +331,7 @@ fun MainScreen(
                         skip = MonitorEngine.skipReason(settings.wifiOnly, net),
                         refreshing = refreshing,
                         onRefresh = { vm.checkNow() },
+                        onOpenHistory = onOpenHistory,
                         onOpenSettings = onOpenSettings
                     )
                 }
@@ -302,6 +340,7 @@ fun MainScreen(
                     MonitorBar(
                         enabled = settings.monitorEnabled,
                         intervalSec = settings.pollIntervalSec,
+                        effectiveSec = effectiveIntervalSec,
                         lastCheck = lastCheck,
                         // 当前处于失败状态的主播数：让「一直在重试」这件事看得见
                         failedCount = list.count { it.enabled && it.errorCount > 0 },
@@ -348,11 +387,14 @@ fun MainScreen(
                             Spacer(Modifier.weight(1f))
                             Text(
                                 if (searchOpen && hasFilter) "${visible.size} / ${list.size} 位"
-                                else "点击或长按管理",
+                                else "${list.count { it.enabled }} 位关注中",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
                             )
                             if (!searchOpen) {
+                                TextButton(onClick = onOpenGroups) {
+                                    Text("分组")
+                                }
                                 IconButton(onClick = { searchOpen = true }) {
                                     Icon(
                                         Icons.Default.Search,
@@ -431,6 +473,24 @@ fun MainScreen(
                                         onClick = { liveOnly = !liveOnly },
                                         label = { Text("只看直播中") }
                                     )
+                                    // 分组筛选与平台筛选并列，用户不用进管理页就能切换
+                                    FilterChip(
+                                        selected = groupFilter == null,
+                                        onClick = { groupFilter = null },
+                                        label = { Text("全部分组") }
+                                    )
+                                    FilterChip(
+                                        selected = groupFilter == "",
+                                        onClick = { groupFilter = if (groupFilter == "") null else "" },
+                                        label = { Text("未分组") }
+                                    )
+                                    groupNames.forEach { g ->
+                                        FilterChip(
+                                            selected = groupFilter == g,
+                                            onClick = { groupFilter = if (groupFilter == g) null else g },
+                                            label = { Text(g) }
+                                        )
+                                    }
                                 }
                             }
                             }
@@ -469,16 +529,43 @@ fun MainScreen(
                                 }
                             }
                         }
-                    } else {
+                    } else if (grouped == null) {
+                        // 搜索中：平铺结果，不插分组头
                         items(visible, key = { it.id }) { s ->
                             StreamerCard(
                                 s = s,
                                 now = now,
-                                // 卡片本身不再直接跳直播间：手指一滑就弹浏览器，回来还得重新找。
-                                // 点击与长按都只开操作面板，真正跳转只留面板里的「打开直播间」。
                                 onClick = { actionFor = s },
                                 onLongClick = { actionFor = s }
                             )
+                        }
+                    } else {
+                        // 非搜索：按分组分段，每组一个可折叠头
+                        grouped.forEach { section ->
+                            item(key = "group:${section.name}") {
+                                GroupHeader(
+                                    name = section.name,
+                                    count = section.items.size,
+                                    collapsed = section.name in collapsedGroups,
+                                    onToggle = {
+                                        collapsedGroups = if (section.name in collapsedGroups) {
+                                            collapsedGroups - section.name
+                                        } else {
+                                            collapsedGroups + section.name
+                                        }
+                                    }
+                                )
+                            }
+                            if (section.name !in collapsedGroups) {
+                                items(section.items, key = { "s:${it.id}" }) { s ->
+                                    StreamerCard(
+                                        s = s,
+                                        now = now,
+                                        onClick = { actionFor = s },
+                                        onLongClick = { actionFor = s }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -539,9 +626,9 @@ fun MainScreen(
         }
     }
 
-    // 长按操作面板
+    // 主播操作面板（底部弹出）
     actionFor?.let { s ->
-        StreamerActionDialog(
+        StreamerActionSheet(
             s = s,
             onOpen = { vm.openRoom(s); actionFor = null },
             onCopy = {
@@ -569,8 +656,74 @@ fun MainScreen(
                     )
                 }
             },
+            onMoveGroup = {
+                moveFor = s
+                actionFor = null
+            },
             onRemove = { actionFor = null; pendingDelete = s },
             onDismiss = { actionFor = null }
+        )
+    }
+
+    if (groupManageOpen) {
+        GroupManageDialog(
+            groups = groupNames,
+            groupCounts = groupCounts,
+            onRename = { renameFor = it; groupManageOpen = false },
+            onDelete = { name ->
+                vm.deleteGroup(name)
+                collapsedGroups = collapsedGroups - name
+                vm.notify("已删除分组「$name」，组内主播转为未分组")
+            },
+            onCreate = { raw ->
+                val name = vm.createGroup(raw)
+                if (name == null) vm.notify("分组名不能为空，且不超过 24 个字")
+                else vm.notify("已新建分组「$name」")
+            },
+            onDismiss = { groupManageOpen = false }
+        )
+    }
+
+    moveFor?.let { s ->
+        MoveGroupDialog(
+            streamer = s,
+            groups = groupNames,
+            onPick = { name ->
+                vm.setGroup(s, name)
+                moveFor = null
+                vm.notify(if (name.isEmpty()) "已移到未分组" else "已移到「$name」")
+            },
+            onCreate = { raw ->
+                val name = vm.createGroup(raw, moveStreamer = s)
+                moveFor = null
+                if (name == null) vm.notify("分组名不能为空，且不超过 24 个字")
+                else vm.notify("已新建分组「$name」并移入")
+            },
+            onDismiss = { moveFor = null }
+        )
+    }
+
+    renameFor?.let { old ->
+        RenameGroupDialog(
+            oldName = old,
+            onConfirm = { raw ->
+                scope.launch {
+                    val err = vm.renameGroup(old, raw)
+                    if (err != null) vm.notify(err)
+                    else {
+                        // 同步折叠状态里的组名，避免改名后折叠状态丢失
+                        if (old in collapsedGroups) {
+                            val newName = vm.normalizeGroupName(raw)
+                            if (newName != null) {
+                                collapsedGroups = (collapsedGroups - old) + newName
+                            }
+                        }
+                        vm.notify("已重命名分组")
+                    }
+                    renameFor = null
+                }
+            },
+            onDismiss = { renameFor = null }
         )
     }
 
@@ -638,6 +791,35 @@ internal fun matchesSearchQuery(
  * 用户会以为已经检测过、只是没人开播——实际一次请求都没发。
  * 所以跳过原因存在时改口「等待网络 / 等待 Wi-Fi」，且绝不说「安静」。
  */
+/**
+ * 把（已按 group 排序的）可见主播切成「分组 → 成员」段落。
+ *
+ * 输入依赖 StreamerDao.observeAllGrouped 的排序：group 升序（空串=未分组排最前），
+ * 所以按首次出现顺序分段即可，无需再排序。纯函数便于单测锁住「未分组在前、组内不丢人」。
+ */
+internal data class GroupSection(val name: String, val items: List<StreamerEntity>)
+
+internal fun groupVisible(list: List<StreamerEntity>): List<GroupSection> {
+    if (list.isEmpty()) return emptyList()
+    val out = ArrayList<GroupSection>()
+    var currentName: String? = null
+    var current = ArrayList<StreamerEntity>()
+    for (s in list) {
+        val key = s.group
+        if (currentName == null || key != currentName) {
+            if (currentName != null) out.add(GroupSection(currentName, current))
+            currentName = key
+            current = ArrayList()
+        }
+        current.add(s)
+    }
+    if (currentName != null) out.add(GroupSection(currentName, current))
+    return out
+}
+
+/** 分组头的显示名：空串显示「未分组」 */
+internal fun groupLabel(name: String): String = if (name.isEmpty()) "未分组" else name
+
 internal fun homeStatusLine(
     monitoring: Boolean,
     total: Int,
@@ -674,6 +856,7 @@ private fun HeroHeader(
     skip: MonitorEngine.SkipReason? = null,
     refreshing: Boolean,
     onRefresh: () -> Unit,
+    onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
@@ -685,7 +868,7 @@ private fun HeroHeader(
                     listOf(cs.primaryContainer.copy(alpha = 0.85f), cs.background)
                 )
             )
-            .padding(start = 20.dp, end = 6.dp, top = 14.dp, bottom = 16.dp)
+            .padding(start = Dimens.SpaceL, end = Dimens.SpaceS, top = Dimens.SpaceM, bottom = Dimens.SpaceM)
     ) {
         Row(verticalAlignment = Alignment.Top) {
             Column(modifier = Modifier.weight(1f)) {
@@ -695,14 +878,14 @@ private fun HeroHeader(
                     fontWeight = FontWeight.Bold,
                     color = cs.onPrimaryContainer
                 )
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(Dimens.SpaceS))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // 跳过时检测实际没在跑，绿点会误导；用灰点 + 文字说明
                     Dot(
-                        color = if (monitoring && skip == null) okColor() else cs.outline,
+                        color = if (monitoring && skip == null) StatusColors.success() else cs.outline,
                         size = 7
                     )
-                    Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.width(Dimens.SpaceS))
                     Text(
                         homeStatusLine(monitoring, total, liveCount, pausedCount, skip),
                         style = MaterialTheme.typography.bodyMedium,
@@ -725,6 +908,15 @@ private fun HeroHeader(
                     )
                 }
             }
+            // 历史入口图标化：H 代表 History，比文字更紧凑，统一放标题栏
+            IconButton(onClick = onOpenHistory) {
+                Text(
+                    "H",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = cs.onPrimaryContainer.copy(alpha = 0.8f)
+                )
+            }
             IconButton(onClick = onOpenSettings) {
                 Icon(
                     Icons.Default.Settings,
@@ -741,6 +933,8 @@ private fun HeroHeader(
 private fun MonitorBar(
     enabled: Boolean,
     intervalSec: Int,
+    /** 含网络倍数/免打扰后的真实间隔（秒） */
+    effectiveSec: Int,
     lastCheck: Long,
     failedCount: Int,
     onToggle: (Boolean) -> Unit
@@ -750,12 +944,12 @@ private fun MonitorBar(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp),
-        shape = RoundedCornerShape(18.dp),
+        shape = Dimens.ShapeMedium,
         colors = CardDefaults.cardColors(containerColor = cardSurface(0.55f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(
-            modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            modifier = Modifier.padding(start = Dimens.SpaceL, end = Dimens.SpaceS, top = Dimens.SpaceS, bottom = Dimens.SpaceS),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
@@ -765,18 +959,22 @@ private fun MonitorBar(
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    // 「基础间隔」而不是「每 N 秒」：移动网络会按倍数拉长、免打扰时段再放大 5 倍
-                    "基础间隔 ${intervalSec.coerceAtLeast(1)} 秒 · 上次 ${Format.relative(lastCheck)}",
+                    // 显示含网络倍数/免打扰后的真实间隔，避免界面说 2 分钟、实际 6 分钟
+                    buildString {
+                        append("实际每 ${formatInterval(effectiveSec)}")
+                        if (effectiveSec > intervalSec) append("（基础 ${intervalSec}s）")
+                        append(" · 上次 ${Format.relative(lastCheck)}")
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = cs.outline
                 )
                 if (enabled && failedCount > 0) {
-                    Spacer(Modifier.height(3.dp))
-                    // 说清楚「还在重试」和「不会提醒」的区别，别让用户以为只是网慢
+                    Spacer(Modifier.height(Dimens.SpaceXS))
+                    // 检测异常用琥珀色（规范），说清「还在重试」和「不会提醒」的区别
                     Text(
                         "$failedCount 位主播信息获取失败，正在自动重试；连续失败会标为「失效」",
                         style = MaterialTheme.typography.labelSmall,
-                        color = cs.error.copy(alpha = 0.85f)
+                        color = StatusColors.warning()
                     )
                 }
             }
@@ -859,7 +1057,7 @@ private fun EmptyState() {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun StreamerCard(
+internal fun StreamerCard(
     s: StreamerEntity,
     now: Long,
     onClick: () -> Unit,
@@ -868,36 +1066,35 @@ private fun StreamerCard(
     val cs = MaterialTheme.colorScheme
     // 暂停的卡片一律不显示「直播中」高亮，避免看起来还在被监控
     val live = s.enabled && s.isLive && !s.missing
-    val shape = RoundedCornerShape(18.dp)
+    val shape = Dimens.ShapeMedium
     val haptic = LocalHapticFeedback.current
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 5.dp)
+            .padding(horizontal = Dimens.SpaceL, vertical = Dimens.SpaceXS)
             .clip(shape)
             .alpha(if (s.enabled) 1f else 0.62f)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = {
-                    // 长按要等 500ms 才弹面板，中间没有触觉反馈会让人以为没按到
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onLongClick()
                 }
             ),
         shape = shape,
         colors = CardDefaults.cardColors(
-            containerColor = if (live) LiveAccent.copy(alpha = 0.055f) else cardSurface(0.4f)
+            containerColor = if (live) StatusColors.live().copy(alpha = 0.055f) else cardSurface(0.4f)
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = if (live) androidx.compose.foundation.BorderStroke(1.dp, LiveAccent.copy(alpha = 0.22f)) else null
+        border = if (live) androidx.compose.foundation.BorderStroke(1.dp, StatusColors.live().copy(alpha = 0.22f)) else null
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = Dimens.SpaceM, vertical = Dimens.SpaceM),
             verticalAlignment = Alignment.CenterVertically
         ) {
             AvatarWithBadge(s = s, live = live)
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(Dimens.SpaceM))
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -908,10 +1105,10 @@ private fun StreamerCard(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(Dimens.SpaceS))
                     StatusPill(s)
                 }
-                Spacer(Modifier.height(3.dp))
+                Spacer(Modifier.height(Dimens.SpaceXS))
                 Text(
                     buildString {
                         append(PlatformRegistry.get(s.platformId)?.displayName ?: s.platformId)
@@ -940,8 +1137,22 @@ private fun StreamerCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(Dimens.SpaceS))
                 TimeLine(s = s, now = now)
+            }
+            // 显式的管理入口：不再依赖用户猜「长按」或点卡片
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongClick()
+                },
+                modifier = Modifier.size(Dimens.MinTouch)
+            ) {
+                Icon(
+                    Icons.Default.MoreVert,
+                    contentDescription = "管理「${s.nickname}」",
+                    tint = cs.outline
+                )
             }
         }
     }
@@ -956,13 +1167,13 @@ private fun TimeLine(s: StreamerEntity, now: Long) {
             s.missing -> Text(
                 "⚠ ${s.lastError ?: "主播或直播间不存在"}",
                 style = MaterialTheme.typography.labelSmall,
-                color = cs.error
+                color = StatusColors.warning()
             )
 
             s.errorCount >= 3 -> Text(
                 "⚠ ${s.lastError ?: "检测异常"}（连续 ${s.errorCount} 次）",
                 style = MaterialTheme.typography.labelSmall,
-                color = cs.error
+                color = StatusColors.warning()
             )
 
             s.isLive -> {
@@ -972,7 +1183,7 @@ private fun TimeLine(s: StreamerEntity, now: Long) {
                     Text(
                         if (showSpan) "已播 " + Format.span(playedMs) else "直播中",
                         style = MaterialTheme.typography.labelSmall,
-                        color = LiveAccent,
+                        color = StatusColors.live(),
                         fontWeight = FontWeight.Medium
                     )
                     if (s.liveStartAt > 0) {
@@ -1045,7 +1256,7 @@ private fun AvatarWithBadge(s: StreamerEntity, live: Boolean) {
                 .clip(CircleShape)
                 .background(cs.surface)
                 .then(
-                    if (live) Modifier.border(2.dp, LiveAccent.copy(alpha = pulse), CircleShape)
+                    if (live) Modifier.border(2.dp, StatusColors.live().copy(alpha = pulse), CircleShape)
                     else Modifier.border(1.dp, cs.outlineVariant, CircleShape)
                 ),
             contentAlignment = Alignment.Center
@@ -1085,15 +1296,14 @@ private fun AvatarWithBadge(s: StreamerEntity, live: Boolean) {
 
 @Composable
 private fun StatusPill(s: StreamerEntity) {
-    val cs = MaterialTheme.colorScheme
     val (color, text) = when {
-        !s.enabled -> cs.outline to "已暂停"
-        s.missing -> cs.outline to "失效"
-        s.isLive -> LiveAccent to "直播中"
-        s.errorCount >= 3 -> cs.error to "异常"
-        else -> cs.outline to "未开播"
+        !s.enabled -> StatusColors.neutral() to "已暂停"   // 暂停=弱化
+        s.missing -> StatusColors.neutral() to "失效"      // 失效=弱化，不与异常混淆
+        s.isLive -> StatusColors.live() to "直播中"        // 直播=珊瑚红
+        s.errorCount >= 3 -> StatusColors.warning() to "异常" // 异常=琥珀
+        else -> StatusColors.neutral() to "未开播"         // 未开播=中性灰
     }
-    Surface(color = color.copy(alpha = 0.12f), shape = RoundedCornerShape(50)) {
+    Surface(color = color.copy(alpha = 0.12f), shape = Dimens.ShapePill) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -1115,9 +1325,192 @@ private fun Dot(color: Color, size: Int) {
     )
 }
 
-/** 长按卡片后的操作面板 */
+/** 可折叠的分组头。点击整行切换折叠；显示组名与成员数。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun StreamerActionDialog(
+private fun GroupHeader(
+    name: String,
+    count: Int,
+    collapsed: Boolean,
+    onToggle: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(cs.secondaryContainer.copy(alpha = 0.45f))
+            .combinedClickable(onClick = onToggle)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            groupLabel(name),
+            style = MaterialTheme.typography.titleSmall,
+            color = cs.onSecondaryContainer,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            "$count 位",
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.onSecondaryContainer.copy(alpha = 0.75f)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            if (collapsed) "▸" else "▾",
+            style = MaterialTheme.typography.bodyMedium,
+            color = cs.onSecondaryContainer
+        )
+    }
+}
+
+/**
+ * 分组管理弹窗：列出所有已有组，可重命名 / 删除；底部新建分组。
+ * 删除只让组内主播回落「未分组」，不删主播（由 VM 保证）。
+ */
+@Composable
+private fun GroupManageDialog(
+    groups: List<String>,
+    groupCounts: Map<String, Int>,
+    onRename: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onCreate: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newName by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("管理分组") },
+        text = {
+            Column {
+                if (groups.isEmpty()) {
+                    Text(
+                        "还没有分组。在下方输入名字新建，或在主播的「移动分组」里创建。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                } else {
+                    Column(Modifier.horizontalScroll(rememberScrollState())) {
+                        groups.forEach { g ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "${groupLabel(g)}  (${groupCounts[g] ?: 0})",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                TextButton(onClick = { onRename(g) }) { Text("改名") }
+                                TextButton(onClick = { onDelete(g) }) { Text("删除") }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("新分组名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(
+                    onClick = {
+                        if (newName.isNotBlank()) {
+                            onCreate(newName)
+                            newName = ""
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("新建分组", modifier = Modifier.fillMaxWidth()) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } }
+    )
+}
+
+/** 移动分组弹窗：选现有组 / 未分组，或新建一个组并把该主播移进去。 */
+@Composable
+private fun MoveGroupDialog(
+    streamer: StreamerEntity,
+    groups: List<String>,
+    onPick: (String) -> Unit,
+    onCreate: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newName by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("移动「${streamer.nickname}」到分组") },
+        text = {
+            Column {
+                // 未分组 + 已有组
+                listOf("" to "未分组").plus(groups.map { it to groupLabel(it) }).forEach { (key, label) ->
+                    TextButton(
+                        onClick = { onPick(key) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (key == streamer.group) "$label  ✓（当前）" else label,
+                                modifier = Modifier.weight(1f),
+                                textAlign = TextAlign.Start
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("或新建分组") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(
+                    onClick = { if (newName.isNotBlank()) onCreate(newName) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("新建并移入", modifier = Modifier.fillMaxWidth()) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+/** 重命名分组弹窗 */
+@Composable
+private fun RenameGroupDialog(
+    oldName: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var value by remember { mutableStateOf(groupLabel(oldName)) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("重命名分组") },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it },
+                label = { Text("分组名") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StreamerActionSheet(
     s: StreamerEntity,
     onOpen: () -> Unit,
     onCopy: () -> Unit,
@@ -1125,69 +1518,77 @@ private fun StreamerActionDialog(
     onStats: (() -> Unit)?,
     enabledBusy: Boolean,
     onToggleEnabled: () -> Unit,
+    onMoveGroup: () -> Unit,
     onRemove: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
     val platform = PlatformRegistry.get(s.platformId)?.displayName ?: s.platformId
-    AlertDialog(
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = { Text(s.nickname, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    "$platform · ${s.displayId}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.outline
-                )
-                Spacer(Modifier.height(8.dp))
-                TextButton(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
-                    Text("打开直播间", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Start)
-                }
-                TextButton(onClick = onCopy, modifier = Modifier.fillMaxWidth()) {
-                    Text("复制直播间链接", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Start)
-                }
-                if (onStats != null) {
-                    TextButton(onClick = onStats, modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            "粉丝走势与数据",
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Start
-                        )
-                    }
-                }
-                TextButton(
-                    onClick = onToggleEnabled,
-                    enabled = !enabledBusy,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        if (enabledBusy) "正在处理…"
-                        else if (s.enabled) "暂停关注" else "恢复关注",
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Start,
-                        color = if (s.enabled) cs.onSurface else okColor()
-                    )
-                }
-                if (!s.enabled) {
-                    Text(
-                        "已暂停：保留卡片，但不再检测、不再提醒",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = cs.outline
-                    )
-                }
-                TextButton(onClick = onRemove, modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        "移除关注",
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Start,
-                        color = cs.error
-                    )
-                }
+        sheetState = sheetState,
+        containerColor = cs.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Dimens.SpaceL)
+                .padding(bottom = Dimens.SpaceXL),
+            verticalArrangement = Arrangement.spacedBy(Dimens.SpaceXS)
+        ) {
+            // ① 主播信息
+            Text(s.nickname, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("$platform · ${s.displayId} · 分组：${groupLabel(s.group)}",
+                style = MaterialTheme.typography.labelSmall, color = cs.outline)
+
+            Spacer(Modifier.height(Dimens.SpaceS))
+            // ② 主要操作
+            SheetAction("打开直播间", Icons.AutoMirrored.Filled.Send, onOpen)
+            SheetAction("复制直播间链接", Icons.AutoMirrored.Filled.List, onCopy)
+            if (onStats != null) SheetAction("粉丝走势与数据", Icons.Default.Star, onStats)
+
+            Spacer(Modifier.height(Dimens.SpaceS))
+            // ③ 关注管理
+            SheetAction(
+                if (enabledBusy) "正在处理…" else if (s.enabled) "暂停关注" else "恢复关注",
+                Icons.Default.Check,
+                onToggleEnabled,
+                enabled = !enabledBusy,
+                color = if (s.enabled) cs.onSurface else StatusColors.success()
+            )
+            SheetAction("移动分组 / 新建分组", Icons.AutoMirrored.Filled.List, onMoveGroup)
+            if (!s.enabled) {
+                Text("已暂停：保留卡片，但不再检测、不再提醒",
+                    style = MaterialTheme.typography.labelSmall, color = StatusColors.muted(),
+                    modifier = Modifier.padding(horizontal = Dimens.SpaceM, vertical = Dimens.SpaceXS))
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
-    )
+            // 移除是危险操作：单独分隔并以错误色突出，仍保留二次确认（在调用处）
+            HorizontalDivider(modifier = Modifier.padding(vertical = Dimens.SpaceS), color = cs.outlineVariant)
+            SheetAction("移除关注", Icons.Default.Delete, onRemove, color = cs.error)
+        }
+    }
+}
+
+@Composable
+private fun SheetAction(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    color: Color = MaterialTheme.colorScheme.onSurface
+) {
+    TextButton(
+        onClick = onClick, enabled = enabled,
+        modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.MinTouch)
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = color)
+            Spacer(Modifier.width(Dimens.SpaceM))
+            Text(label, color = color, modifier = Modifier.weight(1f), textAlign = TextAlign.Start)
+        }
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -1408,7 +1809,7 @@ private fun ReadyBody(r: MainViewModel.AddResult.Ready) {
             else -> "当前未开播"
         },
         style = MaterialTheme.typography.bodySmall,
-        color = if (r.isLive) LiveAccent else cs.outline,
+        color = if (r.isLive) StatusColors.live() else cs.outline,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis
     )

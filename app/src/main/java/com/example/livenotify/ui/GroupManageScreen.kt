@@ -1,0 +1,365 @@
+package com.example.livenotify.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
+import com.example.livenotify.data.StreamerEntity
+
+/**
+ * 独立分组管理页：分组列表（全部 / 未分组 / 自定义组）+ 分组详情。
+ *
+ * 第一版单归属、固定图标 + 按名自动配色（不改数据库）。删除分组只让组内主播回落未分组，
+ * 不删主播——这是分组数据规则，别在 UI 层破坏。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
+    val list by vm.streamers.collectAsStateWithLifecycle()
+    val groupNames by vm.groups.collectAsStateWithLifecycle()
+    val cs = MaterialTheme.colorScheme
+
+    var selected by remember { mutableStateOf<String?>(null) } // null=全部；""=未分组；其它=组名
+    var showCreate by remember { mutableStateOf(false) }
+    var renameFor by remember { mutableStateOf<String?>(null) }
+    var deleteFor by remember { mutableStateOf<String?>(null) }
+    var moveFor by remember { mutableStateOf<StreamerEntity?>(null) }
+    var actionFor by remember { mutableStateOf<StreamerEntity?>(null) }
+
+    // 各分组统计
+    val allCount = list.size
+    val allLive = list.count { it.enabled && it.isLive }
+    val ungrouped = list.filter { it.group.isEmpty() }
+    val grouped = list.filter { it.group.isNotEmpty() }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(if (selected == null) "分组管理" else groupLabel(selected ?: "")) },
+                navigationIcon = {
+                    IconButton(onClick = { if (selected != null) selected = null else onBack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showCreate = true }) {
+                        Icon(Icons.Default.Add, contentDescription = "新建分组")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(bottom = Dimens.SpaceXL)
+        ) {
+            if (selected == null) {
+                // 分组列表
+                item {
+                    GroupRow(
+                        label = "全部关注", count = allCount, live = allLive,
+                        color = cs.primary, onClick = { selected = null },
+                        canManage = false
+                    )
+                }
+                item {
+                    GroupRow(
+                        label = "未分组", count = ungrouped.size,
+                        live = ungrouped.count { it.enabled && it.isLive },
+                        color = Color(UNGROUPED_COLOR),
+                        onClick = { selected = "" }, canManage = false
+                    )
+                }
+                items(groupNames, key = { it }) { name ->
+                    val members = grouped.filter { it.group == name }
+                    GroupRow(
+                        label = name,
+                        count = members.size,
+                        live = members.count { it.enabled && it.isLive },
+                        color = Color(groupColorArgb(name)),
+                        onClick = { selected = name },
+                        canManage = true,
+                        onRename = { renameFor = name },
+                        onDelete = { deleteFor = name }
+                    )
+                }
+            } else {
+                // 分组详情：复用首页主播卡片
+                val members = list.filter { s ->
+                    if (selected.isNullOrEmpty()) s.group.isEmpty() else s.group == selected
+                }
+                if (members.isEmpty()) {
+                    item {
+                        Text(
+                            "这个分组还没有主播。在分组列表里选「全部关注」，用卡片的 ⋮ 把主播移进来。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.outline,
+                            modifier = Modifier.padding(Dimens.SpaceL, Dimens.SpaceXL)
+                        )
+                    }
+                } else {
+                    items(members, key = { it.id }) { s ->
+                        StreamerCard(
+                            s = s,
+                            now = System.currentTimeMillis(),
+                            onClick = { actionFor = s },
+                            onLongClick = { actionFor = s }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showCreate) {
+       GroupNameInput(
+            title = "新建分组",
+            label = "分组名",
+            onConfirm = { raw ->
+                val name = vm.createGroup(raw)
+                if (name != null) selected = name
+                showCreate = false
+            },
+            onDismiss = { showCreate = false }
+        )
+    }
+    renameFor?.let { old ->
+        GroupNameInput(
+            title = "重命名分组",
+            label = "新名称",
+            initial = old,
+            onConfirm = { raw ->
+                scopeLaunch { vm.renameGroup(old, raw) }
+                renameFor = null
+            },
+            onDismiss = { renameFor = null }
+        )
+    }
+    deleteFor?.let { name ->
+        AlertDialog(
+            onDismissRequest = { deleteFor = null },
+            title = { Text("删除分组「$name」") },
+            text = { Text("组内主播会转为「未分组」，不会被取消关注或删除。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteGroup(name)
+                    if (selected == name) selected = ""
+                    deleteFor = null
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { deleteFor = null }) { Text("取消") } }
+        )
+    }
+    moveFor?.let { s ->
+        MoveGroupSheet(
+            streamer = s,
+            groups = groupNames,
+            onPick = { name -> vm.setGroup(s, name); moveFor = null },
+            onCreate = { raw ->
+                val name = vm.createGroup(raw, moveStreamer = s)
+                if (name != null && selected == null) Unit
+                moveFor = null
+            },
+            onDismiss = { moveFor = null }
+        )
+    }
+    actionFor?.let { s ->
+        SimpleStreamerActions(
+            s = s,
+            onMove = { moveFor = s; actionFor = null },
+            onToggle = { scopeLaunch { vm.setStreamerEnabled(s, !s.enabled) }; actionFor = null },
+            onRemove = { vm.remove(s); actionFor = null },
+            onDismiss = { actionFor = null }
+        )
+    }
+}
+
+/** 轻量协程启动：本文件只需要 fire-and-forget */
+private fun scopeLaunch(block: suspend () -> Unit) {
+    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+        @Suppress("UNUSED_EXPRESSION")
+        block()
+    }
+}
+
+@Composable
+private fun GroupRow(
+    label: String,
+    count: Int,
+    live: Int,
+    color: Color,
+    onClick: () -> Unit,
+    canManage: Boolean,
+    onRename: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Dimens.SpaceL, vertical = Dimens.SpaceXS)
+            .clickable(onClick = onClick),
+        shape = Dimens.ShapeMedium,
+        colors = CardDefaults.cardColors(containerColor = cardSurface(0.5f))
+    ) {
+        Row(
+            modifier = Modifier.padding(Dimens.SpaceM),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(color.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    if (label.isEmpty()) "?" else label.first().uppercaseChar().toString(),
+                    color = color, fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+            Spacer(Modifier.width(Dimens.SpaceM))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    "$count 位" + if (live > 0) " · $live 直播中" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (live > 0) StatusColors.live() else MaterialTheme.colorScheme.outline
+                )
+            }
+            if (canManage) {
+                TextButton(onClick = { onRename?.invoke() }) { Text("改名") }
+                TextButton(onClick = { onDelete?.invoke() }) { Text("删除") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GroupNameInput(
+    title: String,
+    label: String,
+    initial: String = "",
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var value by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = value, onValueChange = { value = it },
+                label = { Text(label) }, singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = { TextButton(onClick = { if (value.isNotBlank()) onConfirm(value) }) { Text("确定") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+@Composable
+private fun MoveGroupSheet(
+    streamer: StreamerEntity,
+    groups: List<String>,
+    onPick: (String) -> Unit,
+    onCreate: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newName by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("移动「${streamer.nickname}」到") },
+        text = {
+            Column(Modifier.horizontalScroll(rememberScrollState())) {
+                listOf("" to "未分组").plus(groups.map { it to it }).forEach { (key, label) ->
+                    TextButton(onClick = { onPick(key) }) {
+                        Text(if (key == streamer.group) "$label ✓" else label, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+                OutlinedTextField(
+                    value = newName, onValueChange = { newName = it },
+                    label = { Text("或新建分组") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(onClick = { if (newName.isNotBlank()) onCreate(newName) }) {
+                    Text("新建并移入", modifier = Modifier.fillMaxWidth())
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+@Composable
+private fun SimpleStreamerActions(
+    s: StreamerEntity,
+    onMove: () -> Unit,
+    onToggle: () -> Unit,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s.nickname, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column {
+                TextButton(onClick = onMove, modifier = Modifier.fillMaxWidth()) {
+                    Text("移动分组", modifier = Modifier.fillMaxWidth())
+                }
+                TextButton(onClick = onToggle, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (s.enabled) "暂停关注" else "恢复关注", modifier = Modifier.fillMaxWidth())
+                }
+                TextButton(onClick = onRemove, modifier = Modifier.fillMaxWidth()) {
+                    Text("移除关注", modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
+}

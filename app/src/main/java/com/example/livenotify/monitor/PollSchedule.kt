@@ -1,6 +1,7 @@
 package com.example.livenotify.monitor
 
 import com.example.livenotify.data.Settings
+import kotlin.math.min
 
 /** 影响轮询间隔的网络类型；OTHER = 判断不出来（按「非 Wi-Fi 的未知网络」保守处理） */
 enum class NetworkKind { WIFI, CELLULAR, OTHER }
@@ -20,6 +21,21 @@ object PollSchedule {
 
     /** 免打扰时段内的降频倍数 */
     const val QUIET_FACTOR = 5
+
+    /** 连续异常时的异常退避：30s → 60s → 120s → 300s 封顶。 detection 成功即重置为 0。 */
+    const val ERROR_BACKOFF_BASE_MS = 30_000L
+    const val ERROR_BACKOFF_MAX_MS = 300_000L
+
+    /**
+     * 连续 [consecutiveFailures] 次异常后，下一轮前应等待的毫秒。
+     * 30s → 60s → 120s → 240s → 300s（封顶）。用异常退避代替固定 30s，
+     * 避免服务端故障/网络持续不可用时每 30 秒就空跑一轮、徒增耗电与日志。
+     */
+    fun errorBackoffMs(consecutiveFailures: Int): Long {
+        if (consecutiveFailures <= 0) return ERROR_BACKOFF_BASE_MS
+        val shifted = ERROR_BACKOFF_BASE_MS shl min(consecutiveFailures, 4)
+        return min(shifted, ERROR_BACKOFF_MAX_MS)
+    }
 
     data class Plan(
         val baseSec: Int,

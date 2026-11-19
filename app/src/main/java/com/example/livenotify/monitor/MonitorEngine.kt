@@ -3,6 +3,7 @@ package com.example.livenotify.monitor
 import android.content.Context
 import android.util.Log
 import com.example.livenotify.data.AppDatabase
+import com.example.livenotify.data.LiveSessionEntity
 import com.example.livenotify.data.Settings
 import com.example.livenotify.data.SettingsRepository
 import com.example.livenotify.data.StreamerEntity
@@ -79,6 +80,15 @@ class MonitorEngine(
     /** 后台轮询和手动刷新共用同一状态机，必须串行执行，避免重复通知和旧快照覆盖新结果。 */
     private val runMutex = Mutex()
 
+    /**
+     * 供 UI 侧「改写主播行」的操作（暂停/恢复、移动分组等）与后台检测串行。
+     *
+     * runOnce 开头读 listEnabled() 拿快照、结尾 dao.updateAll() 整行写回。若用户操作夹在
+     * 「读快照」和「写回」之间，enabled / group 会被旧快照整行覆盖——表现为暂停失效、
+     * 分组丢失。共用这把锁后，用户操作要么整轮之前、要么整轮之后落地，不会被冲掉。
+     */
+    suspend fun <T> withMonitorLock(block: suspend () -> T): T = runMutex.withLock { block() }
+
     suspend fun runOnce(): Report = runMutex.withLock {
         val now = System.currentTimeMillis()
         val cfg = settings.current()
@@ -112,6 +122,7 @@ class MonitorEngine(
         var notified = 0
         var errors = 0
 
+        val baseIntervalMs = cfg.pollIntervalSec * 1000L
         for ((platformId, items) in all.groupBy { it.platformId }) {
             val platform = PlatformRegistry.get(platformId)
             if (platform == null) {
@@ -122,8 +133,16 @@ class MonitorEngine(
                 continue
             }
 
-            val outcomes = try {
-                platform.fetch(items.map { it.anchorId })
+            // 连续失败的主播按退避间隔跳过，本轮不发请求、不改状态、不计错误
+            val backoffIds = items.filter {
+                FailureBackoff.shouldSkip(it.errorCount, it.lastCheckedAt, now, baseIntervalMs)
+            }.map { it.id }.toHashSet()
+            val fetchItems = items.filter { it.id !in backoffIds }
+
+            val outcomes = if (fetchItems.isEmpty()) {
+                emptyMap()
+            } else try {
+                platform.fetch(fetchItems.map { it.anchorId })
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
@@ -132,6 +151,7 @@ class MonitorEngine(
             }.associateBy { it.anchorId }
 
             for (s in items) {
+                if (s.id in backoffIds) continue // 退避中：保持原样，既不推送也不累加错误
                 when (val o = outcomes[s.anchorId]) {
                     null -> {
                         errors++
@@ -230,6 +250,7 @@ class MonitorEngine(
                             lastError = null
                         )
 
+                        var notifySent: Boolean? = null // 本轮是否尝试过推送：null=没尝试
                         if (transition.confirmedLive && (wantsFresh || wantsRetry)) {
                             val lateByMs = if (wantsRetry) {
                                 (now - s.pendingNotifySince).coerceAtLeast(0L)
@@ -242,6 +263,7 @@ class MonitorEngine(
                                     lastNotifiedLiveStart = sessionKey
                                 )
                                 notified++
+                                notifySent = true
                             } else {
                                 // 发不出去（权限或渠道被关）就把这一场记成待办。
                                 // 有效期从**第一次**失败算起：反复失败只刷新记录、不续期，
@@ -252,6 +274,7 @@ class MonitorEngine(
                                     pendingNotifySince =
                                         if (wantsRetry) s.pendingNotifySince else now
                                 )
+                                notifySent = false
                             }
                             // 通知结果必须立刻落库：晚一步进程被杀，下一轮就会重复提醒、
                             // 或者（失败时没记下来）从此漏掉这一场。
@@ -268,6 +291,14 @@ class MonitorEngine(
                                 pendingNotifySession = s.pendingNotifySession,
                                 pendingNotifySince = s.pendingNotifySince
                             )
+                        }
+                        // 开播历史：会话的开/收口与通知状态落库。失败只记日志，绝不影响本轮检测主流程。
+                        try {
+                            withContext(NonCancellable) {
+                                recordSession(s, updated, sessionKey, notifySent)
+                            }
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "record session failed for id=${s.id}", t)
                         }
                         updates.add(updated)
                     }
@@ -287,6 +318,56 @@ class MonitorEngine(
             startedAt = now,
             finishedAt = lastRunAt
         )
+    }
+
+    /**
+     * 把本轮的开播状态变化写进历史会话表。
+     *
+     * @param before 检测前的主播状态（旧快照）
+     * @param after 本轮写回后的状态（isLive 已是本轮结论）
+     * @param sessionKey 平台给的本场开播时刻（秒）
+     * @param notifySent 本轮是否尝试推送（true 成功 / false 失败 / null 未尝试）
+     */
+    private suspend fun recordSession(
+        before: StreamerEntity,
+        after: StreamerEntity,
+        sessionKey: Long,
+        notifySent: Boolean?
+    ) {
+        val sdao = db.liveSessionDao()
+        val now = after.lastCheckedAt
+        val event = sessionEvent(before, after.isLive, sessionKey)
+
+        // 下播 / 换场：先收口进行中的会话
+        if (event == SessionEvent.CLOSE || event == SessionEvent.SWITCH) {
+            sdao.openSession(before.platformId, before.anchorId)?.let { cur ->
+                sdao.close(cur.id, now, after.title)
+            }
+        }
+
+        if (event == SessionEvent.OPEN || event == SessionEvent.SWITCH) {
+            // 开播 / 换场：建一条新会话，带上本轮的推送结果
+            sdao.insert(
+                LiveSessionEntity(
+                    platformId = after.platformId,
+                    anchorId = after.anchorId,
+                    nickname = after.nickname,
+                    startAtSec = sessionKey,
+                    startedAtMs = now,
+                    title = after.title,
+                    notified = notifySent == true,
+                    notifyFailed = notifySent == false
+                )
+            )
+        } else if (after.isLive) {
+            // 直播中：持续更新标题；补发成功/失败时同步推送状态
+            sdao.openSession(after.platformId, after.anchorId)?.let { cur ->
+                sdao.updateTitle(cur.id, after.title)
+                if (notifySent != null) {
+                    sdao.setNotifyState(cur.id, notifySent == true, notifySent == false)
+                }
+            }
+        }
     }
 
     /**

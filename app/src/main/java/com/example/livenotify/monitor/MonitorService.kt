@@ -42,21 +42,30 @@ class MonitorService : Service() {
     /** 上次成功读到的监控开关；设置读盘失败时沿用它，而不是默认「已开启」 */
     private var lastEnabled = true
 
+    /**
+     * 当前常驻通知用的渠道（hidden 状态）。渠道一旦和上次不同，必须先 cancel 再
+     * startForeground 重建——单纯 notify 换渠道在部分 ROM（实测 MIUI）上不会覆盖旧渠道那条，
+     * 于是旧文案（如 "准备中…"）永久残留。
+     */
+    private var lastForegroundHidden = false
+
     private val engine: MonitorEngine by lazy { com.example.livenotify.Graph.engine }
     private val settings by lazy { com.example.livenotify.Graph.settings }
 
     override fun onCreate() {
         super.onCreate()
         running.value = true
-        val n = NotificationHelper.monitorNotification(this, "准备中…", 0, false)
-        // Android 14 起 startForeground 必须声明类型；用 ServiceCompat 兼容低版本
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-        } else {
-            0
-        }
-        ServiceCompat.startForeground(this, NotificationHelper.MONITOR_ID, n, type)
+        // 首帧先发一条中性文案（不带写死的「0 位 / 准备中…」）。startLoop 第一轮会读真实
+        // 的 count / hidden / skip 覆盖它；publish() 还会处理渠道切换时旧通知的清理。
+        val n = NotificationHelper.monitorNotification(this, "正在准备首次检测…", 0, false)
+        ServiceCompat.startForeground(this, NotificationHelper.MONITOR_ID, n, foregroundType())
+        lastForegroundHidden = false
     }
+
+    /** Android 14 起 startForeground 必须声明类型；ServiceCompat 兼容低版本 */
+    private fun foregroundType(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -79,6 +88,8 @@ class MonitorService : Service() {
     private fun startLoop() {
         if (loopJob?.isActive == true) return
         loopJob = scope.launch {
+            // 连续异常次数：成功跑完一轮就清零，异常则递增并指数退避
+            var consecutiveFailures = 0
             while (isActive) {
                 // 固定周期调度的基准点：本轮开始（不是结束）。
                 // 检测耗时被算进周期里，用户设 2 分钟就真的是「这轮开始到下轮开始」2 分钟。
@@ -99,6 +110,7 @@ class MonitorService : Service() {
                     }
                     val report = engine.runOnce()
                     updateForeground(report)
+                    consecutiveFailures = 0 // 跑通一轮（含 skip）就重置退避
                     val period = engine.nextDelayMs()
                     val now = System.currentTimeMillis()
                     // 单轮超过一个周期就跳过错过的格点，绝不连续补跑
@@ -114,8 +126,10 @@ class MonitorService : Service() {
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (t: Throwable) {
-                    Log.w(TAG, "loop error", t)
-                    delay(30_000) // 异常退避，避免疯狂重试
+                    consecutiveFailures++
+                    val wait = PollSchedule.errorBackoffMs(consecutiveFailures)
+                    Log.w(TAG, "loop error #$consecutiveFailures, backoff ${wait}ms", t)
+                    delay(wait) // 连续异常指数退避，成功一轮即重置
                 }
             }
         }
@@ -126,24 +140,13 @@ class MonitorService : Service() {
         // 用实时值才能保证通知里的「共 N 位」永远和列表一致。
         val count = currentCount()
         val time = clockOf(com.example.livenotify.Graph.engine.lastRunAt)
-        val text = report.skip?.let { skipLine(it, time) } ?: when {
-            count == 0 -> if (time != null) "暂无关注，最近检测 $time" else "暂无关注"
-            else -> "最近检测 ${time ?: "—"} · 共 $count 位" +
-                (if (report.errors > 0) " · ${report.errors} 项异常" else "")
-        }
+        val text = NotificationHelper.monitorDetail(
+            count = count,
+            lastTime = time,
+            skip = report.skip,
+            errors = report.errors
+        )
         publish(text, count, paused = report.skip != null)
-    }
-
-    /**
-     * 跳过的原因要写在通知上，否则用户只会看到「最近检测」停在半小时前，
-     * 以为应用坏了。带上上次真正检测的时刻，一眼能看出是网络问题。
-     */
-    private fun skipLine(skip: MonitorEngine.SkipReason, lastTime: String?): String {
-        val head = when (skip) {
-            MonitorEngine.SkipReason.WIFI_ONLY -> "等待 Wi-Fi（当前不是 Wi-Fi）"
-            MonitorEngine.SkipReason.NO_NETWORK -> "等待网络（无可用连接）"
-        }
-        return if (lastTime != null) "$head · 最近检测 $lastTime" else head
     }
 
     /** 关注列表变化时刷新常驻通知：重新读一次数量与上次检测时间 */
@@ -152,11 +155,7 @@ class MonitorService : Service() {
         val last = com.example.livenotify.Graph.engine.lastRunAt
         val time = clockOf(last)
         val skip = com.example.livenotify.Graph.engine.lastSkip.value
-        val text = when {
-            skip != null -> skipLine(skip, time)
-            count == 0 -> if (time != null) "暂无关注，最近检测 $time" else "暂无关注"
-            else -> "最近检测 ${time ?: "—"} · 共 $count 位"
-        }
+        val text = NotificationHelper.monitorDetail(count = count, lastTime = time, skip = skip)
         publish(text, count, paused = skip != null)
     }
 
@@ -189,12 +188,21 @@ class MonitorService : Service() {
         } catch (t: Throwable) {
             false
         }
-        runCatching {
-            NotificationManagerCompat.from(this)
-                .notify(
-                    NotificationHelper.MONITOR_ID,
-                    NotificationHelper.monitorNotification(this, text, count, hidden, paused)
+        val nm = NotificationManagerCompat.from(this)
+        val notification = NotificationHelper.monitorNotification(this, text, count, hidden, paused)
+        if (hidden != lastForegroundHidden) {
+            // 渠道切换（用户开/关「隐藏常驻通知」）：先撤掉旧渠道的同 id 通知再重建。
+            // 不 cancel 的话，MIUI 上旧渠道那条会残留在通知栏，出现「准备中…」永不消失。
+            // 用 startForeground 而不是 notify，保证服务前台身份与通知渠道一致。
+            runCatching { nm.cancel(NotificationHelper.MONITOR_ID) }
+            runCatching {
+                ServiceCompat.startForeground(
+                    this, NotificationHelper.MONITOR_ID, notification, foregroundType()
                 )
+            }
+            lastForegroundHidden = hidden
+        } else {
+            runCatching { nm.notify(NotificationHelper.MONITOR_ID, notification) }
         }
     }
 

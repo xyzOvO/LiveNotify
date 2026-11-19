@@ -70,6 +70,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.material3.FilterChip
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.livenotify.data.Settings
 import com.example.livenotify.monitor.NetSnapshot
@@ -106,7 +108,9 @@ fun SettingsScreen(
     vm: MainViewModel,
     onBack: () -> Unit,
     /** 打开 B 站数据页（不指定主播，进去自己选） */
-    onOpenStats: () -> Unit = {}
+    onOpenStats: () -> Unit = {},
+    /** 打开平台健康诊断页 */
+    onOpenDiagnostic: () -> Unit = {}
 ) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val updateState by vm.update.collectAsStateWithLifecycle()
@@ -475,6 +479,18 @@ fun SettingsScreen(
                         OutlinedButton(onClick = onOpenStats) { Text("查看 B 站数据") }
                     }
                     ItemDivider()
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                        Text("平台健康诊断", style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "查看各平台检测状态与失败次数，支持一键复制脱敏报告。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = onOpenDiagnostic) { Text("查看诊断") }
+                    }
+                    ItemDivider()
                     DouyinCookieBlock(vm = vm, settings = settings)
                     ItemDivider()
                     PlatformStatusBlock()
@@ -482,6 +498,31 @@ fun SettingsScreen(
             }
 
             item { GroupTitle("其他") }
+            // 主题三态：设备外观偏好独立于关注列表备份，不进 Settings/备份格式
+            item {
+                SettingsCard {
+                    Column(Modifier.padding(horizontal = Dimens.SpaceL, vertical = Dimens.SpaceM)) {
+                        Text("外观主题", style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(Dimens.SpaceXS))
+                        val themeMode by ThemePrefs.mode.collectAsState()
+                        Row(horizontalArrangement = Arrangement.spacedBy(Dimens.SpaceS)) {
+                            ThemeMode.entries.forEach { mode ->
+                                FilterChip(
+                                    selected = themeMode == mode,
+                                    onClick = { ThemePrefs.set(mode) },
+                                    label = { Text(
+                                        when (mode) {
+                                            ThemeMode.SYSTEM -> "跟随系统"
+                                            ThemeMode.LIGHT -> "浅色"
+                                            ThemeMode.DARK -> "深色"
+                                        }
+                                    ) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             item {
                 SettingsCard {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -1227,7 +1268,7 @@ private const val MAX_POLL = 600
 private const val POLL_STEPS = 17
 
 /** 把秒数说成人话：界面上再出现「120 秒」就太工程师了 */
-private fun formatInterval(sec: Int): String {
+internal fun formatInterval(sec: Int): String {
     val s = sec.coerceAtLeast(0)
     if (s < 60) return "$s 秒"
     val m = s / 60

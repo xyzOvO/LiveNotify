@@ -12,13 +12,14 @@ import org.junit.Test
 
 class BackupFormatTest {
 
-    private fun streamer(id: Long, enabled: Boolean = true) = StreamerEntity(
+    private fun streamer(id: Long, enabled: Boolean = true, group: String = "") = StreamerEntity(
         id = id,
         platformId = "bilibili",
         anchorId = "anchor-$id",
         nickname = "主播$id",
         roomUrl = "https://live.bilibili.com/$id",
         enabled = enabled,
+        group = group,
         // 这些是本机运行产物，不该出现在备份里
         isLive = true,
         liveStartAt = 555L,
@@ -46,7 +47,7 @@ class BackupFormatTest {
         assertFalse(json.contains("roomUrl"))
 
         val d = BackupFormat.decode(json)
-        assertEquals(1, d.version)
+        assertEquals(2, d.version)
         assertEquals(1234L, d.exportedAt)
         assertEquals(2, d.entries.size)
         assertEquals("anchor-1", d.entries[0].anchorId)
@@ -62,6 +63,29 @@ class BackupFormatTest {
         assertEquals(d.entries, back.entries)
         assertEquals(d.prefs, back.prefs)
         assertEquals(d.exportedAt, back.exportedAt)
+    }
+
+    @Test
+    fun `分组名随备份往返保留`() {
+        val d = BackupFormat.snapshotOf(
+            listOf(streamer(1, group = "游戏"), streamer(2, group = "未分组测试"), streamer(3)),
+            settings(), 1L
+        )
+        val json = BackupFormat.encode(d)
+        assertTrue("分组名应写进备份", json.contains("\"group\": \"游戏\""))
+        val back = BackupFormat.decode(json)
+        assertEquals("游戏", back.entries[0].group)
+        assertEquals("未分组测试", back.entries[1].group)
+        assertEquals("", back.entries[2].group)  // 未分组的不写 group 字段，解码回空串
+    }
+
+    @Test
+    fun `旧版无分组的备份仍可导入`() {
+        val d = BackupFormat.decode(
+            """{"app":"LiveNotify","version":1,"streamers":[{"platformId":"bilibili","anchorId":"a1"}]}"""
+        )
+        assertEquals(1, d.version)
+        assertEquals("", d.entries[0].group)  // 旧备份缺字段 → 未分组
     }
 
     @Test

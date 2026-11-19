@@ -36,8 +36,27 @@ import kotlinx.coroutines.launch
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val dao = Graph.db.streamerDao()
+    val sessionDao = Graph.db.liveSessionDao()
 
-    val streamers: StateFlow<List<StreamerEntity>> = dao.observeAll()
+    init {
+        // 启动时清理 90 天前的历史会话，避免长期运行后无限增长
+        viewModelScope.launch {
+            runCatching {
+                sessionDao.deleteOlderThan(System.currentTimeMillis() - HISTORY_RETENTION_MS)
+            }
+        }
+    }
+
+    companion object {
+        const val HISTORY_RETENTION_MS = 90L * 24 * 60 * 60 * 1000
+    }
+
+    // 分组展示用：按 group 排序。后台检测与常驻通知都只读 enabled，不受展示排序影响。
+    val streamers: StateFlow<List<StreamerEntity>> = dao.observeAllGrouped()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 所有非空分组名，供分组管理与「移动到」目标列表 */
+    val groups: StateFlow<List<String>> = dao.observeGroups()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val lastCheckedAt: StateFlow<Long> = streamers
@@ -167,11 +186,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 第二步：用户确认后才真正落库。这里再查一次重，防止确认期间别处已经加过 */
     suspend fun confirmAdd(entity: StreamerEntity): AddResult {
-        if (dao.findByAnchor(entity.platformId, entity.anchorId) != null) {
-            return AddResult.Error("该主播已在关注列表中")
-        }
-        val fresh = entity.copy(lastCheckedAt = System.currentTimeMillis())
-        if (dao.insert(fresh) == -1L) return AddResult.Error("该主播已在关注列表中")
+        // 写库与后台检测的整行写回必须互斥，否则新加主播的 group/enabled 可能被旧快照覆盖
+        val fresh = Graph.engine.withMonitorLock {
+            if (dao.findByAnchor(entity.platformId, entity.anchorId) != null) {
+                return@withMonitorLock null
+            }
+            val f = entity.copy(lastCheckedAt = System.currentTimeMillis())
+            if (dao.insert(f) == -1L) null else f
+        } ?: return AddResult.Error("该主播已在关注列表中")
         val monitoring = settings.value.monitorEnabled
         if (monitoring) {
             MonitorService.start(getApplication())
@@ -263,7 +285,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 platformId = platform.id,
                 anchorId = e.anchorId,
                 nickname = snap.nickname.ifBlank { e.anchorId },
-                roomUrl = snap.roomUrl
+                roomUrl = snap.roomUrl,
+                group = normalizeGroupName(e.group) ?: ""
             )
             val entity = resumeBaseline(fresh, snap, System.currentTimeMillis(), enabled = e.enabled)
             pending.add(entity)
@@ -273,7 +296,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 取不到快照的主播在上一阶段已明确跳过并记录了原因，本来就不该进这次写入。
         if (pending.isNotEmpty()) {
             try {
-                dao.insertAll(pending)
+                editStreamers { dao.insertAll(pending) }
                 added = pending.size
             } catch (ce: CancellationException) {
                 throw ce
@@ -302,8 +325,60 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return ImportReport(added, skipped, failed)
     }
 
+    // ── 关注分组 ───────────────────────────────────────────────
+
+    /** 校验分组名：去掉首尾空白，禁止过长（避免 UI 溢出）与纯空白名 */
+    fun normalizeGroupName(raw: String): String? {
+        val name = raw.trim()
+        return when {
+            name.isEmpty() || name.length > 24 -> null
+            else -> name
+        }
+    }
+
+    /**
+     * 所有「改写主播行」的 UI 操作都走这里，与后台检测的整行写回互斥。
+     * 不这样做的话：后台 runOnce 读快照在前、写回在后，中间用户暂停/改分组，
+     * 写回会把 enabled / group 冲成旧值（暂停失效、分组丢失）。
+     */
+    private suspend fun <T> editStreamers(block: suspend () -> T): T =
+        Graph.engine.withMonitorLock { block() }
+
+    /** 把某位主播移到分组；group 传空串表示「未分组」 */
+    fun setGroup(s: StreamerEntity, group: String) = viewModelScope.launch {
+        editStreamers { dao.setGroup(s.id, group) }
+    }
+
+    /**
+     * 新建分组并（可选）把某位主播移进去。
+     * 组名已存在时直接复用，不报错——用户从「移动到…→新建」进来时可能手输已有名字。
+     * 返回规范化后的组名，null 表示名字非法。
+     */
+    fun createGroup(raw: String, moveStreamer: StreamerEntity? = null): String? {
+        val name = normalizeGroupName(raw) ?: return null
+        viewModelScope.launch {
+            if (moveStreamer != null) editStreamers { dao.setGroup(moveStreamer.id, name) }
+        }
+        return name
+    }
+
+    /** 重命名分组：组内所有主播改到新名。目标名非法或与其它组重名时不改，返回失败原因。 */
+    suspend fun renameGroup(oldName: String, rawNew: String): String? {
+        val newName = normalizeGroupName(rawNew)
+            ?: return "分组名不能为空，且不超过 24 个字"
+        if (newName == oldName) return null
+        if (dao.observeGroups().first().any { it == newName }) return "已有同名分组"
+        editStreamers { dao.renameGroup(oldName, newName) }
+        return null
+    }
+
+    /** 删除分组：组内主播回落「未分组」，不删主播本身 */
+    fun deleteGroup(name: String) = viewModelScope.launch {
+        editStreamers { dao.clearGroup(name) }
+    }
+
     fun remove(s: StreamerEntity) = viewModelScope.launch {
-        dao.deleteById(s.id)
+        editStreamers { dao.deleteById(s.id) }
         MonitorService.refreshIfRunning(getApplication())
     }
 
@@ -320,14 +395,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     suspend fun setStreamerEnabled(s: StreamerEntity, enabled: Boolean): String? {
         if (!enabled) {
-            dao.update(
-                s.copy(
-                    enabled = false,
-                    isLive = false,
-                    liveStreak = 0,
-                    liveStartAt = 0L
+            // 与后台整行写回互斥，否则暂停后若正卡在「读快照→写回」之间，enabled 会被冲回 true
+            editStreamers {
+                dao.update(
+                    s.copy(
+                        enabled = false,
+                        isLive = false,
+                        liveStreak = 0,
+                        liveStartAt = 0L
+                    )
                 )
-            )
+            }
             MonitorService.refreshIfRunning(getApplication())
             return null
         }
@@ -351,7 +429,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is Outcome.Failed -> return outcome.reason
         }
         val now = System.currentTimeMillis()
-        dao.update(resumeBaseline(s, snap, now))
+        editStreamers { dao.update(resumeBaseline(s, snap, now)) }
         MonitorService.refreshIfRunning(getApplication())
         return null
     }
@@ -362,9 +440,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 用新 id 至少能保证「没加过就恢复成功」。
      */
     fun restore(s: StreamerEntity) = viewModelScope.launch {
-        if (dao.insert(s.copy(id = 0)) != -1L) {
-            MonitorService.refreshIfRunning(getApplication())
-        }
+        val ok = editStreamers { dao.insert(s.copy(id = 0)) != -1L }
+        if (ok) MonitorService.refreshIfRunning(getApplication())
     }
 
     fun setMonitorEnabled(enabled: Boolean) = viewModelScope.launch {

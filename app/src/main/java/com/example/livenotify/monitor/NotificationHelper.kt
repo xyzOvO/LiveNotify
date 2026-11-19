@@ -239,6 +239,45 @@ object NotificationHelper {
         }
     }
 
+    /**
+     * 常驻通知的标题 / 正文 / 渠道，抽成纯函数，供 MonitorService 与单测共用。
+     *
+     * 抽出来的原因是一次真实 BUG：onCreate 曾写死「正在检测 0 位主播 / 准备中…」且固定用
+     * 普通渠道，后续更新却因「隐藏常驻通知」改投静默渠道，换渠道时普通渠道那条旧通知没被
+     * 清掉，于是「0 位 / 准备中…」永久残留在通知栏。现在初始通知也走这里，按真实 count、
+     * hidden、skip 生成，渠道选择只有 [monitorChannelId] 一个出口。
+     */
+    internal fun monitorTitle(count: Int, hidden: Boolean, paused: Boolean): String = when {
+        paused -> "已暂停检测 · $count 位主播"
+        hidden -> "正在后台检测 $count 位主播"
+        else -> "正在检测 $count 位主播"
+    }
+
+    internal fun monitorChannelId(hidden: Boolean): String =
+        if (hidden) CHANNEL_MONITOR_SILENT else CHANNEL_MONITOR
+
+    internal fun skipLine(skip: MonitorEngine.SkipReason, lastTime: String?): String {
+        val head = when (skip) {
+            MonitorEngine.SkipReason.WIFI_ONLY -> "等待 Wi-Fi（当前不是 Wi-Fi）"
+            MonitorEngine.SkipReason.NO_NETWORK -> "等待网络（无可用连接）"
+        }
+        return if (lastTime != null) "$head · 最近检测 $lastTime" else head
+    }
+
+    /** [count] 必须是当前库的真实数量，绝不写死 0；lastTime 为空表示还没跑过第一轮 */
+    internal fun monitorDetail(
+        count: Int,
+        lastTime: String?,
+        skip: MonitorEngine.SkipReason? = null,
+        errors: Int = 0
+    ): String = when {
+        skip != null -> skipLine(skip, lastTime)
+        count == 0 -> if (lastTime != null) "暂无关注，最近检测 $lastTime" else "暂无关注"
+        lastTime == null -> "正在准备首次检测 · 共 $count 位"
+        else -> "最近检测 $lastTime · 共 $count 位" +
+            (if (errors > 0) " · $errors 项异常" else "")
+    }
+
     /** 常驻通知。hidden=true 时改投最低可见度渠道，状态栏不再弹出常规条目。 */
     fun monitorNotification(
         context: Context,
@@ -247,19 +286,10 @@ object NotificationHelper {
         hidden: Boolean,
         paused: Boolean = false
     ) =
-        NotificationCompat.Builder(
-            context,
-            if (hidden) CHANNEL_MONITOR_SILENT else CHANNEL_MONITOR
-        )
+        NotificationCompat.Builder(context, monitorChannelId(hidden))
             .setSmallIcon(R.drawable.ic_notification)
             // 没有网络（或「仅 Wi-Fi」待机）时别说「正在检测」——实际一次请求都没发
-            .setContentTitle(
-                when {
-                    paused -> "已暂停检测 · $count 位主播"
-                    hidden -> "正在后台检测 $count 位主播"
-                    else -> "正在检测 $count 位主播"
-                }
-            )
+            .setContentTitle(monitorTitle(count, hidden, paused))
             .setContentText(text)
             .setContentIntent(mainPendingIntent(context))
             .setOngoing(true)

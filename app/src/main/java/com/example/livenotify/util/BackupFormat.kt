@@ -17,13 +17,15 @@ import com.example.livenotify.data.StreamerEntity
  * 而且纯 JVM 实现让单元测试能真正跑编解码（Android 的 org.json 在单测里是 stub）。
  */
 object BackupFormat {
-    const val VERSION = 1
+    // v2：Entry 增加 group（分组名）。v1 备份缺该字段时解码为空串，向下兼容。
+    const val VERSION = 2
     const val MIME = "application/json"
 
     data class Entry(
         val platformId: String,
         val anchorId: String,
-        val enabled: Boolean
+        val enabled: Boolean,
+        val group: String = ""
     )
 
     data class Prefs(
@@ -68,7 +70,7 @@ object BackupFormat {
     /** 从当前数据库与设置生成备份内容：白名单在这里收口，避免手滑带上 Cookie/运行状态 */
     fun snapshotOf(all: List<StreamerEntity>, s: Settings, now: Long): Data = Data(
         exportedAt = now,
-        entries = all.map { Entry(it.platformId, it.anchorId, it.enabled) },
+        entries = all.map { Entry(it.platformId, it.anchorId, it.enabled, it.group) },
         prefs = Prefs(
             pollIntervalSec = s.pollIntervalSec,
             mobileFactor = s.mobileFactor,
@@ -121,7 +123,11 @@ object BackupFormat {
         d.entries.forEachIndexed { i, e ->
             sb.append("    { \"platformId\": ").append(quote(e.platformId))
                 .append(", \"anchorId\": ").append(quote(e.anchorId))
-                .append(", \"enabled\": ").append(e.enabled.toString()).append(" }")
+                .append(", \"enabled\": ").append(e.enabled.toString())
+            if (e.group.isNotEmpty()) {
+                sb.append(", \"group\": ").append(quote(e.group))
+            }
+            sb.append(" }")
             if (i != d.entries.lastIndex) sb.append(',')
             sb.append('\n')
         }
@@ -158,7 +164,8 @@ object BackupFormat {
             val anchor = str(o["anchorId"])
             if (platform.isBlank() || anchor.isBlank()) continue
             if (!seen.add("$platform:$anchor")) continue
-            entries.add(Entry(platform, anchor, bool(o["enabled"], true)))
+            // v1 备份没有 group 字段，str() 对缺失/非字符串返回空串 = 未分组
+            entries.add(Entry(platform, anchor, bool(o["enabled"], true), str(o["group"])))
         }
         val p = root["prefs"] as? Map<*, *> ?: emptyMap<Any?, Any?>()
         val defaults = Settings()

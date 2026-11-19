@@ -18,6 +18,8 @@ data class StreamerEntity(
     val title: String = "",
     /** 平台附注：B 站轮播/短号、斗鱼分区名等，展示在平台行后面 */
     val note: String = "",
+    /** 所属分组名；空串表示未分组。单归属，换组只改这一个字段 */
+    val group: String = "",
     val roomUrl: String,
 
     val isLive: Boolean = false,     // 最近一次成功检测到的开播状态

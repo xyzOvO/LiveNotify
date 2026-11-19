@@ -7,9 +7,10 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [StreamerEntity::class], version = 4, exportSchema = true)
+@Database(entities = [StreamerEntity::class, LiveSessionEntity::class], version = 6, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun streamerDao(): StreamerDao
+    abstract fun liveSessionDao(): LiveSessionDao
 
     companion object {
         @Volatile
@@ -36,6 +37,29 @@ abstract class AppDatabase : RoomDatabase() {
             (3 to 4) to listOf(
                 "ALTER TABLE streamers ADD COLUMN pendingNotifySession INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE streamers ADD COLUMN pendingNotifySince INTEGER NOT NULL DEFAULT 0"
+            ),
+            // v4 → v5：新增分组列；已有主播一律落入「未分组」（空串），不改动原有数据
+            (4 to 5) to listOf(
+                "ALTER TABLE streamers ADD COLUMN `group` TEXT NOT NULL DEFAULT ''"
+            ),
+            // v5 → v6：新增开播历史表
+            (5 to 6) to listOf(
+                "CREATE TABLE IF NOT EXISTS `live_sessions` (" +
+                    "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                    "`platformId` TEXT NOT NULL, " +
+                    "`anchorId` TEXT NOT NULL, " +
+                    "`nickname` TEXT NOT NULL, " +
+                    "`startAtSec` INTEGER NOT NULL, " +
+                    "`startedAtMs` INTEGER NOT NULL, " +
+                    "`endAtMs` INTEGER NOT NULL, " +
+                    "`title` TEXT NOT NULL, " +
+                    "`notified` INTEGER NOT NULL, " +
+                    "`notifyFailed` INTEGER NOT NULL" +
+                    ")",
+                "CREATE INDEX IF NOT EXISTS `index_live_sessions_anchorId_platformId` " +
+                    "ON `live_sessions` (`anchorId`, `platformId`)",
+                "CREATE INDEX IF NOT EXISTS `index_live_sessions_endAtMs` " +
+                    "ON `live_sessions` (`endAtMs`)"
             )
         )
 
@@ -48,6 +72,8 @@ abstract class AppDatabase : RoomDatabase() {
         private val MIGRATION_1_2 = migrationOf(1, 2)
         private val MIGRATION_2_3 = migrationOf(2, 3)
         private val MIGRATION_3_4 = migrationOf(3, 4)
+        private val MIGRATION_4_5 = migrationOf(4, 5)
+        private val MIGRATION_5_6 = migrationOf(5, 6)
 
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
@@ -56,7 +82,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "livenotify.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                     .also { instance = it }
             }

@@ -91,6 +91,8 @@ class MainActivity : ComponentActivity() {
                             statsUid = uid
                             screen = Screen.Stats
                         },
+                        onOpenHistory = { screen = Screen.History },
+                        onOpenGroups = { screen = Screen.GroupManage },
                         sharedText = pendingShareText,
                         onConsumeSharedText = { pendingShareText = null }
                     )
@@ -100,11 +102,24 @@ class MainActivity : ComponentActivity() {
                         onOpenStats = {
                             statsUid = 0L
                             screen = Screen.Stats
-                        }
+                        },
+                        onOpenDiagnostic = { screen = Screen.Diagnostic }
                     )
                     Screen.Stats -> StatsScreen(
                         vm = androidx.lifecycle.viewmodel.compose.viewModel<StatsViewModel>(),
                         initialUid = statsUid,
+                        onBack = { screen = Screen.Main }
+                    )
+                    Screen.History -> HistoryScreen(
+                        vm = androidx.lifecycle.viewmodel.compose.viewModel<HistoryViewModel>(),
+                        onBack = { screen = Screen.Main }
+                    )
+                    Screen.GroupManage -> GroupManageScreen(
+                        vm = androidx.lifecycle.viewmodel.compose.viewModel<MainViewModel>(),
+                        onBack = { screen = Screen.Main }
+                    )
+                    Screen.Diagnostic -> DiagnosticScreen(
+                        vm = androidx.lifecycle.viewmodel.compose.viewModel<MainViewModel>(),
                         onBack = { screen = Screen.Main }
                     )
                 }
@@ -124,4 +139,4 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Screen { Main, Settings, Stats }
+enum class Screen { Main, Settings, Stats, History, GroupManage, Diagnostic }

@@ -84,8 +84,14 @@ object Http {
         }
     }
 
+    /** 带状态码的 HTTP 错误，供重试判据区分 4xx（不重试）与 5xx/429（重试） */
+    private class HttpStatusException(val code: Int) : IOException("HTTP $code")
+
     /**
      * 同步执行（调用方已在 IO 线程）。返回 body 字符串，失败抛 IOException。
+     *
+     * 对幂等 GET 做有限次指数退避重试：网络抖动、429、5xx 会自动再试，4xx 立即失败。
+     * 每次 attempt 都重新过 limiter，保证重试也遵守节流间隔（不会绕过限流）。
      */
     suspend fun get(
         url: String,
@@ -94,28 +100,49 @@ object Http {
         limiter: RateLimiter? = null,
         ua: String = UA_PC
     ): String = withContext(Dispatchers.IO) {
-        limiter?.pass()
         val builder = Request.Builder().url(url)
             .header("User-Agent", ua)
             .header("Accept-Language", "zh-CN,zh;q=0.9")
         headers.forEach { (k, v) -> builder.header(k, v) }
         if (!cookie.isNullOrBlank()) builder.header("Cookie", cookie)
-        client.newCall(builder.build()).runCancellable { resp: Response ->
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code} @ $url")
-            val body = resp.body ?: throw IOException("空响应 @ $url")
-            body.source().use { source ->
-                val buf = Buffer()
-                var total = 0L
-                // okio 的 read(...) 一次最多搬一个缓冲块，必须循环读满，否则响应会被截断。
-                while (total <= MAX_BODY_BYTES) {
-                    val read = source.read(buf, MAX_BODY_BYTES + 1 - total)
-                    if (read <= 0L) break
-                    total += read
+        val request = builder.build()
+
+        var attempt = 0
+        var result: String? = null
+        while (result == null) {
+            limiter?.pass()
+            try {
+                result = client.newCall(request).runCancellable { resp: Response ->
+                    if (!resp.isSuccessful) throw HttpStatusException(resp.code)
+                    val body = resp.body ?: throw IOException("空响应 @ $url")
+                    body.source().use { source ->
+                        val buf = Buffer()
+                        var total = 0L
+                        // okio 的 read(...) 一次最多搬一个缓冲块，必须循环读满，否则响应会被截断。
+                        while (total <= MAX_BODY_BYTES) {
+                            val read = source.read(buf, MAX_BODY_BYTES + 1 - total)
+                            if (read <= 0L) break
+                            total += read
+                        }
+                        if (total > MAX_BODY_BYTES) throw IOException("响应超过 ${MAX_BODY_BYTES / 1024}KB @ $url")
+                        buf.readString(UTF_8)
+                    }
                 }
-                if (total > MAX_BODY_BYTES) throw IOException("响应超过 ${MAX_BODY_BYTES / 1024}KB @ $url")
-                buf.readString(UTF_8)
+            } catch (ce: CancellationException) {
+                throw ce // 取消永远原样抛出，绝不重试
+            } catch (t: Throwable) {
+                val retryable = when (t) {
+                    is HttpStatusException -> RetryPolicy.shouldRetryHttpCode(t.code)
+                    else -> RetryPolicy.shouldRetryThrowable(t)
+                }
+                if (!retryable || attempt >= RetryPolicy.MAX_ATTEMPTS - 1) throw t
+                val wait = RetryPolicy.delayMs(attempt)
+                Log.w(TAG, "GET retry ${attempt + 1}/${RetryPolicy.MAX_ATTEMPTS} in ${wait}ms: ${t.message}")
+                attempt++
+                delay(wait)
             }
         }
+        result
     }
 
     /** 跟随重定向拿到最终 URL，用于解析 v.douyin.com / b23.tv 短链 */

@@ -13,6 +13,7 @@ class LiveNotifyApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Graph.init(this)
+        com.example.livenotify.ui.ThemePrefs.init(this)
         NotificationHelper.createChannels(this)
 
         CoroutineScope(Dispatchers.Default).launch {
