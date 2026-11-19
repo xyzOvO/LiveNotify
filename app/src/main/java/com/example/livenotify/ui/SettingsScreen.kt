@@ -11,6 +11,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -102,7 +104,7 @@ import kotlin.math.roundToInt
  * 检测 / 通知 / 后台权限 / 数据 分组——用户找的是「让提醒更及时」「别再漏提醒」
  * 这类目的，而不是某个具体字段名。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     vm: MainViewModel,
@@ -116,6 +118,7 @@ fun SettingsScreen(
 ) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val updateState by vm.update.collectAsStateWithLifecycle()
+    val shareBusy by vm.shareBusy.collectAsStateWithLifecycle()
     val streamers by vm.streamers.collectAsStateWithLifecycle()
     val lastCheck by vm.lastCheckedAt.collectAsStateWithLifecycle()
     val running by vm.monitorRunning.collectAsStateWithLifecycle()
@@ -502,7 +505,10 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.outline
                         )
                         Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
                             OutlinedButton(
                                 enabled = updateState !is MainViewModel.UpdateState.Checking &&
                                     (updateState as? MainViewModel.UpdateState.Available)?.downloading != true,
@@ -510,12 +516,27 @@ fun SettingsScreen(
                             ) { Text(if (updateState is MainViewModel.UpdateState.Checking) "检查中…" else "检查更新") }
                             OutlinedButton(onClick = { openReleases(context) }) { Text("全部版本") }
                         }
+                        Spacer(Modifier.height(4.dp))
+                        // 分享的是服务器返回的公开 HTTPS 直链，不是本地文件；没查到过就现场查一次
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            OutlinedButton(
+                                enabled = !shareBusy,
+                                onClick = { vm.shareLatest(context) }
+                            ) { Text("分享下载链接") }
+                            OutlinedButton(
+                                enabled = !shareBusy,
+                                onClick = { vm.copyDownloadUrl(context) }
+                            ) { Text("复制链接") }
+                        }
                         Spacer(Modifier.height(6.dp))
                         UpdateStatusBlock(vm, updateState)
                     }
                     SettingSwitch(
                         title = "启动时自动检查",
-                        subtitle = "只提示新版本，不会自动下载安装。",
+                        subtitle = "每 24 小时最多查一次；只提示新版本，不会自动下载安装。",
                         checked = settings.autoUpdateCheck,
                         onChange = vm::setAutoUpdateCheck
                     )
@@ -1210,10 +1231,12 @@ private fun AboutCard(context: Context) {
  * 设置页里的更新状态：检查结果、更新日志、下载进度、失败重试都就地展示，不弹窗。
  * 「当前版本 → 最新版本」在卡片标题下已经并排给出，这里不重复。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun UpdateStatusBlock(vm: MainViewModel, state: MainViewModel.UpdateState) {
     val cs = MaterialTheme.colorScheme
     val context = LocalContext.current
+    val shareBusy by vm.shareBusy.collectAsStateWithLifecycle()
     when (state) {
         is MainViewModel.UpdateState.Idle -> Unit
         is MainViewModel.UpdateState.Checking -> {
@@ -1253,6 +1276,7 @@ private fun UpdateStatusBlock(vm: MainViewModel, state: MainViewModel.UpdateStat
                         style = MaterialTheme.typography.bodySmall,
                         color = cs.outline
                     )
+                    OutlinedButton(onClick = { vm.cancelDownload() }) { Text("取消下载") }
                 } else {
                     NotesBox(ReleaseNotes.format(state.info.notes), maxHeight = 200.dp)
                     Text(
@@ -1260,9 +1284,17 @@ private fun UpdateStatusBlock(vm: MainViewModel, state: MainViewModel.UpdateStat
                         style = MaterialTheme.typography.bodySmall,
                         color = cs.outline
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
                         Button(onClick = { vm.downloadUpdate(state.info) }) { Text("下载并安装") }
                         OutlinedButton(onClick = { vm.dismissUpdate() }) { Text("以后再说") }
+                        // 更新详情里也能把新版本地址发给别人
+                        OutlinedButton(
+                            enabled = !shareBusy,
+                            onClick = { vm.shareLatest(context) }
+                        ) { Text("分享") }
                     }
                 }
             }

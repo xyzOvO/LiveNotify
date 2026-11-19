@@ -68,12 +68,17 @@ object ApkDownloader {
     /**
      * 下载 APK。expectedSha256 非空时，新下载的包和上次留下的包都要核对文件 hash；
      * 不符一律删掉——坏包留着会让下次点「重试」继续复用同一个文件。
+     *
+     * @param onCall 把底层的 OkHttp Call 交出去，调用方才能取消下载：
+     *   `call.execute()` 阻塞在 socket 读上，光 cancel 协程是断不开的，
+     *   必须 `call.cancel()` 让 read 抛异常。取消后临时文件会被删掉。
      */
     suspend fun download(
         context: Context,
         url: String,
         version: String,
         expectedSha256: String? = null,
+        onCall: ((okhttp3.Call) -> Unit)? = null,
         onProgress: (Progress) -> Unit
     ): DownloadResult = withContext(Dispatchers.IO) {
         val finalFile = fileFor(context, version)
@@ -89,13 +94,17 @@ object ApkDownloader {
 
         val tmp = File(dir(context), "$PREFIX$version.apk.part")
         tmp.delete()
-        var failure: String? = null
-        try {
+        val failure: String? = try {
             val call = Http.client.newCall(Request.Builder().url(url).build())
-            failure = call.execute().use { resp -> write(resp, tmp, onProgress) }
+            onCall?.invoke(call)
+            call.execute().use { resp -> write(resp, tmp, onProgress) }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            // 用户点了「取消下载」：清掉半截文件再原样抛，别当成网络失败
+            tmp.delete()
+            throw ce
         } catch (t: Throwable) {
             Log.w(TAG, "download error", t)
-            failure = "下载失败，请检查网络后重试"
+            "下载失败，请检查网络后重试"
         }
         if (failure != null) {
             tmp.delete()

@@ -1,6 +1,7 @@
 package com.example.livenotify.ui
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
@@ -8,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.livenotify.util.BackupFormat
 import com.example.livenotify.util.ShareText
 import com.example.livenotify.Graph
+import com.example.livenotify.R
 import com.example.livenotify.data.EasterEggs
 import com.example.livenotify.data.GroupEntity
 import com.example.livenotify.data.Settings
@@ -25,6 +27,8 @@ import com.example.livenotify.update.ApkDownloader
 import com.example.livenotify.update.ApkInstaller
 import com.example.livenotify.update.ReleaseInfo
 import com.example.livenotify.update.UpdateApi
+import com.example.livenotify.update.UpdateSchedule
+import com.example.livenotify.update.UpdateSharer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -635,29 +639,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 手动检查更新：无论结果如何都给提示 */
+    /** 手动检查更新：无论结果如何都给提示。不受自动检查的 24 小时间隔限制 */
     fun checkUpdate() = viewModelScope.launch {
         val s = _update.value
         if (s is UpdateState.Checking) return@launch
         if (s is UpdateState.Available && s.downloading) return@launch
         _update.value = UpdateState.Checking
-        _update.value = when (val info = UpdateApi.latest()) {
-            null -> UpdateState.Failed("检查更新失败，请检查网络后重试")
-            else -> if (info.versionCode > BuildConfig.VERSION_CODE.toLong()) UpdateState.Available(info)
-            else UpdateState.UpToDate
+        val info = UpdateApi.latest()
+        _update.value = when {
+            info == null -> UpdateState.Failed("检查更新失败，请检查网络后重试")
+            else -> {
+                // 手动查也算「查过了」，避免刚查完重启又被自动检查打一次接口
+                Graph.settings.setLastUpdateCheckAt(System.currentTimeMillis())
+                if (info.versionCode > BuildConfig.VERSION_CODE.toLong()) UpdateState.Available(info)
+                else UpdateState.UpToDate
+            }
         }
     }
 
-    /** 启动时自动检查一次：没更新就静默，有更新才弹 */
+    /** 启动时自动检查：默认 24 小时内只查一次，没更新就静默，有更新才提示 */
     private var autoChecked = false
 
     fun autoCheckUpdate() = viewModelScope.launch {
         if (autoChecked) return@launch
         autoChecked = true
-        if (!Graph.settings.current().autoUpdateCheck) return@launch
+        val settings = Graph.settings.current()
+        if (!settings.autoUpdateCheck) return@launch
+        // 距上次检查不足 24 小时直接跳过：不然每次冷启动都要打一次 GitHub 接口
+        if (!UpdateSchedule.shouldAutoCheck(settings.lastUpdateCheckAt, System.currentTimeMillis())) {
+            return@launch
+        }
         // 用户已经手动查过（或正在下载）就不要用自动检查的结果覆盖
         if (_update.value !is UpdateState.Idle) return@launch
+        // 请求失败不记时间，下次启动还能再试
         val info = UpdateApi.latest() ?: return@launch
+        Graph.settings.setLastUpdateCheckAt(System.currentTimeMillis())
         // 点过「以后再说」的版本不再自动弹，免得每次启动都拦一次
         if (info.versionCode == Graph.settings.current().ignoredVersionCode) return@launch
         if (info.versionCode > BuildConfig.VERSION_CODE.toLong()) {
@@ -665,12 +681,87 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ── 分享下载链接 ──────────────────────────────────────────
+
+    /** 分享请求进行中：防止连点拉出多个系统分享面板 / 多次请求服务器 */
+    private val _shareBusy = MutableStateFlow(false)
+    val shareBusy: StateFlow<Boolean> = _shareBusy
+
+    /**
+     * 取一份可用于分享的版本信息。
+     *
+     * 优先复用已经拿到的检查结果（包括正在下载的那条），这样分享**不会**多打一次接口、
+     * 也不会打断下载；只有从没查过时才按需请求一次。
+     */
+    private suspend fun latestForShare(): ReleaseInfo? =
+        when (val st = _update.value) {
+            is UpdateState.Available -> st.info
+            is UpdateState.Failed -> st.info
+            else -> UpdateApi.latest()
+        }
+
+    /** 拉起系统分享面板；面板打不开时退回复制链接 */
+    fun shareLatest(context: Context) = viewModelScope.launch {
+        if (_shareBusy.value) return@launch
+        _shareBusy.value = true
+        try {
+            val info = latestForShare() ?: run {
+                notify("暂时无法获取下载链接，请检查网络后重试")
+                return@launch
+            }
+            val text = UpdateSharer.shareText(
+                info = info,
+                appName = getApplication<Application>().getString(R.string.app_name)
+            )
+            if (text == null) {
+                notify("下载地址无效，已停止分享")
+                return@launch
+            }
+            if (!UpdateSharer.share(context, text)) {
+                // 设备上没有能接收纯文本的应用：至少让用户能把链接复制出去
+                if (UpdateSharer.copy(context, info.apkUrl)) notify("无法打开分享面板，下载链接已复制")
+                else notify("无法打开分享面板，请稍后重试")
+            }
+        } finally {
+            _shareBusy.value = false
+        }
+    }
+
+    /** 复制最新版本的公开下载地址 */
+    fun copyDownloadUrl(context: Context) = viewModelScope.launch {
+        if (_shareBusy.value) return@launch
+        _shareBusy.value = true
+        try {
+            val info = latestForShare() ?: run {
+                notify("暂时无法获取下载链接，请检查网络后重试")
+                return@launch
+            }
+            if (!UpdateSharer.isHttps(info.apkUrl)) {
+                notify("下载地址无效，已停止复制")
+                return@launch
+            }
+            if (UpdateSharer.copy(context, info.apkUrl)) notify("下载链接已复制")
+            else notify("复制失败，请稍后重试")
+        } finally {
+            _shareBusy.value = false
+        }
+    }
+
+    /** 正在下载的任务与底层连接：取消时要同时断掉协程和 socket 读 */
+    private var downloadJob: kotlinx.coroutines.Job? = null
+
+    @Volatile
+    private var downloadCall: okhttp3.Call? = null
+
     /** 下载新版本并拉起系统安装界面 */
     fun downloadUpdate(info: ReleaseInfo) = viewModelScope.launch {
-        if ((_update.value as? UpdateState.Available)?.downloading == true) return@launch
+        // 已经有一个在跑（含连续点「重试」）就不再起第二个
+        if (downloadJob?.isActive == true) return@launch
+        downloadJob = coroutineContext[kotlinx.coroutines.Job]
         _update.value = UpdateState.Available(info, downloading = true, percent = 0)
         val file = when (val r = ApkDownloader.download(
-            getApplication(), info.apkUrl, info.versionName, info.sha256
+            getApplication(), info.apkUrl, info.versionName, info.sha256,
+            onCall = { downloadCall = it }
         ) { p ->
             _update.value = UpdateState.Available(
                 info = info,
@@ -734,6 +825,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 安装页已推到前台，关掉弹窗；用户返回时若没装成，可在设置页再点一次（会复用已下载的包）
         _update.value = UpdateState.Idle
+    }
+
+    /**
+     * 取消正在进行的下载。
+     *
+     * 只断开连接并清掉半截的 .part 文件，**不删**已经下好的完整包——
+     * 用户随时可以再点一次「下载并安装」，校验通过就直接复用。
+     */
+    fun cancelDownload() {
+        val info = (_update.value as? UpdateState.Available)?.info ?: return
+        downloadCall?.cancel()
+        downloadCall = null
+        downloadJob?.cancel()
+        downloadJob = null
+        // 状态回到「有新版本、可以下载」，按钮变回「下载并安装」
+        _update.value = UpdateState.Available(info)
+        notify("已取消下载")
     }
 
     /** 失败后原地重试：复用同一份 Release 信息，已下好的包会先校验再决定是否重下 */

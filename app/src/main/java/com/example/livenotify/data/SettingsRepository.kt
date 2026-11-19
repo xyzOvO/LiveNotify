@@ -38,6 +38,8 @@ data class Settings(
     val hideMonitorNotification: Boolean = false,
     /** 启动时自动检查一次新版本（只提示，不会自动下载安装） */
     val autoUpdateCheck: Boolean = true,
+    /** 上次检查更新的时刻（毫秒）。自动检查按 24 小时间隔节流，避免每次冷启动都打接口 */
+    val lastUpdateCheckAt: Long = 0L,
     /** 用户点过「以后再说」的版本；自动检查到这个版本就不再弹，手动检查仍可看到 */
     val ignoredVersionCode: Long = 0L,
     /** 上次成功访问 B 站数据接口的域；空串表示还没记录，走默认主节点 */
@@ -62,6 +64,7 @@ class SettingsRepository(private val context: Context) {
         val NOTIFY_VIBRATE = booleanPreferencesKey("notify_vibrate")
         val HIDE_MONITOR_NOTIFICATION = booleanPreferencesKey("hide_monitor_notification")
         val AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")
+        val LAST_UPDATE_CHECK = longPreferencesKey("last_update_check_at")
         val IGNORED_VERSION = longPreferencesKey("ignored_version_code")
         val STATS_API_ORIGIN = stringPreferencesKey("stats_api_origin")
     }
@@ -88,6 +91,7 @@ class SettingsRepository(private val context: Context) {
                 notifyVibrate = p[Keys.NOTIFY_VIBRATE] ?: true,
                 hideMonitorNotification = p[Keys.HIDE_MONITOR_NOTIFICATION] ?: false,
                 autoUpdateCheck = p[Keys.AUTO_UPDATE_CHECK] ?: true,
+                lastUpdateCheckAt = p[Keys.LAST_UPDATE_CHECK] ?: 0L,
                 ignoredVersionCode = p[Keys.IGNORED_VERSION] ?: 0L,
                 statsApiOrigin = p[Keys.STATS_API_ORIGIN] ?: ""
             )
@@ -137,6 +141,9 @@ class SettingsRepository(private val context: Context) {
     suspend fun setNotifyVibrate(v: Boolean) = edit { it[Keys.NOTIFY_VIBRATE] = v }
     suspend fun setHideMonitorNotification(v: Boolean) = edit { it[Keys.HIDE_MONITOR_NOTIFICATION] = v }
     suspend fun setAutoUpdateCheck(v: Boolean) = edit { it[Keys.AUTO_UPDATE_CHECK] = v }
+
+    /** 记下「本次检查更新的时刻」；自动检查据此做 24 小时节流，手动检查也会刷新它 */
+    suspend fun setLastUpdateCheckAt(ms: Long) = edit { it[Keys.LAST_UPDATE_CHECK] = ms }
 
     /** 记下用户不想再被提醒的版本（传 0 表示恢复提醒） */
     suspend fun setIgnoredVersionCode(v: Long) = edit {
