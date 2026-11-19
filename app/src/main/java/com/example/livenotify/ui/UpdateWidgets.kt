@@ -41,10 +41,34 @@ internal fun NotesBox(text: String, maxHeight: Dp = 220.dp) {
     }
 }
 
-/** 「更新包 2.5 MB · 覆盖安装，关注列表不会丢」；兜底路径拿不到大小时只留后半句 */
-internal fun packageLine(sizeBytes: Long): String {
+/** 「更新包 2.5 MB · 发布于 2026-11-19 · 覆盖安装，关注列表不会丢」；缺哪项就省略哪项 */
+internal fun packageLine(sizeBytes: Long, publishedAt: String = ""): String {
+    val parts = mutableListOf<String>()
     val size = Format.size(sizeBytes)
-    return if (size.isEmpty()) "覆盖安装，关注列表不会丢" else "更新包 $size · 覆盖安装，关注列表不会丢"
+    if (size.isNotEmpty()) parts.add("更新包 $size")
+    val date = publishDate(publishedAt)
+    if (date.isNotEmpty()) parts.add("发布于 $date")
+    parts.add("覆盖安装，关注列表不会丢")
+    return parts.joinToString(" · ")
+}
+
+/**
+ * 把 GitHub 的 ISO 时间（`2026-11-19T16:05:47Z`）转成本地日期。
+ *
+ * 兜底路径（Releases 页 302）拿不到发布时间，传空串返回空串；
+ * 解析失败也返回空串而不是把半截 ISO 字符串糊到界面上。
+ */
+internal fun publishDate(iso: String): String {
+    if (iso.isBlank()) return ""
+    return try {
+        java.time.OffsetDateTime.parse(iso)
+            .atZoneSameInstant(java.time.ZoneId.systemDefault())
+            .toLocalDate()
+            .toString()
+    } catch (t: Throwable) {
+        val head = iso.take(10)
+        if (Regex("""\d{4}-\d{2}-\d{2}""").matches(head)) head else ""
+    }
 }
 
 /** 「正在下载 37% · 3.1 MB / 8.4 MB」；拿不到总大小时只说百分比 */

@@ -1280,7 +1280,7 @@ private fun UpdateStatusBlock(vm: MainViewModel, state: MainViewModel.UpdateStat
                 } else {
                     NotesBox(ReleaseNotes.format(state.info.notes), maxHeight = 200.dp)
                     Text(
-                        packageLine(state.info.sizeBytes),
+                        packageLine(state.info.sizeBytes, state.info.publishedAt),
                         style = MaterialTheme.typography.bodySmall,
                         color = cs.outline
                     )

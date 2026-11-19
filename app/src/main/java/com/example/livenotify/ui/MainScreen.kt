@@ -1816,7 +1816,7 @@ private fun UpdateDialog(
                 } else {
                     NotesBox(ReleaseNotes.format(info.notes))
                     Text(
-                        packageLine(info.sizeBytes),
+                        packageLine(info.sizeBytes, info.publishedAt),
                         style = MaterialTheme.typography.bodySmall,
                         color = cs.outline
                     )
