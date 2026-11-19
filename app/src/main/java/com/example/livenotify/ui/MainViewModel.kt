@@ -9,6 +9,7 @@ import com.example.livenotify.util.BackupFormat
 import com.example.livenotify.util.ShareText
 import com.example.livenotify.Graph
 import com.example.livenotify.data.EasterEggs
+import com.example.livenotify.data.GroupEntity
 import com.example.livenotify.data.Settings
 import com.example.livenotify.data.StreamerEntity
 import com.example.livenotify.monitor.MonitorEngine
@@ -28,6 +29,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -36,6 +38,7 @@ import kotlinx.coroutines.launch
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val dao = Graph.db.streamerDao()
+    private val groupDao = Graph.db.groupDao()
     val sessionDao = Graph.db.liveSessionDao()
 
     init {
@@ -55,9 +58,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val streamers: StateFlow<List<StreamerEntity>> = dao.observeAllGrouped()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** 所有非空分组名，供分组管理与「移动到」目标列表 */
-    val groups: StateFlow<List<String>> = dao.observeGroups()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    /**
+     * 所有分组名，供分组管理与「移动到」目标列表。
+     *
+     * 以 [GroupEntity] 名册为准（这样才能有「还没有成员的空分组」），
+     * 再并上主播行里实际出现的组名：从旧备份恢复、或从老版本升级上来时，
+     * 名册可能来不及补录，兜底保证「有成员就一定看得见这个组」。
+     * 顺序：名册顺序在前，仅在数据里出现的排在后面。
+     */
+    val groups: StateFlow<List<String>> = combine(
+        groupDao.observeAll().map { list -> list.map { it.name } },
+        dao.observeGroups()
+    ) { registered, actual ->
+        registered + actual.filter { it !in registered }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val lastCheckedAt: StateFlow<Long> = streamers
         .map { it.maxOfOrNull { s -> s.lastCheckedAt } ?: 0L }
@@ -296,7 +310,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 取不到快照的主播在上一阶段已明确跳过并记录了原因，本来就不该进这次写入。
         if (pending.isNotEmpty()) {
             try {
-                editStreamers { dao.insertAll(pending) }
+                editStreamers {
+                    dao.insertAll(pending)
+                    // 备份里带的分组名要补进名册，否则恢复后这些组只能靠「实际出现的组」兜底，
+                    // 一旦组内主播被移走，该组就会凭空消失。
+                    var order = groupDao.maxSortOrder()
+                    pending.map { it.group }
+                        .filter { it.isNotEmpty() }
+                        .distinct()
+                        .forEach { groupDao.insert(GroupEntity(it, ++order)) }
+                }
                 added = pending.size
             } catch (ce: CancellationException) {
                 throw ce
@@ -346,19 +369,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 把某位主播移到分组；group 传空串表示「未分组」 */
     fun setGroup(s: StreamerEntity, group: String) = viewModelScope.launch {
-        editStreamers { dao.setGroup(s.id, group) }
+        editStreamers {
+            // 目标组可能是从旧备份里带出来的、名册里还没有，补一条免得分组页看不到它
+            if (group.isNotEmpty()) groupDao.insert(GroupEntity(group, groupDao.maxSortOrder() + 1))
+            dao.setGroup(s.id, group)
+        }
     }
 
     /**
      * 新建分组并（可选）把某位主播移进去。
      * 组名已存在时直接复用，不报错——用户从「移动到…→新建」进来时可能手输已有名字。
      * 返回规范化后的组名，null 表示名字非法。
+     *
+     * 必须写名册表：分组不再是「主播行上的字段」，空组也要能独立存在，
+     * 否则用户新建完一返回列表，这个组就消失了（这就是之前的 bug）。
      */
-    fun createGroup(raw: String, moveStreamer: StreamerEntity? = null): String? {
+    suspend fun createGroup(raw: String, moveStreamer: StreamerEntity? = null): String? {
         val name = normalizeGroupName(raw) ?: return null
-        viewModelScope.launch {
-            if (moveStreamer != null) editStreamers { dao.setGroup(moveStreamer.id, name) }
-        }
+        groupDao.insert(GroupEntity(name, groupDao.maxSortOrder() + 1))
+        if (moveStreamer != null) editStreamers { dao.setGroup(moveStreamer.id, name) }
         return name
     }
 
@@ -367,13 +396,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val newName = normalizeGroupName(rawNew)
             ?: return "分组名不能为空，且不超过 24 个字"
         if (newName == oldName) return null
-        if (dao.observeGroups().first().any { it == newName }) return "已有同名分组"
+        if (groupDao.listAll().any { it.name == newName }) return "已有同名分组"
+        groupDao.rename(oldName, newName)
         editStreamers { dao.renameGroup(oldName, newName) }
         return null
     }
 
     /** 删除分组：组内主播回落「未分组」，不删主播本身 */
     fun deleteGroup(name: String) = viewModelScope.launch {
+        groupDao.delete(name)
         editStreamers { dao.clearGroup(name) }
     }
 
@@ -515,6 +546,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setPollInterval(sec: Int) = viewModelScope.launch { Graph.settings.setPollInterval(sec) }
     fun setMobileFactor(f: Int) = viewModelScope.launch { Graph.settings.setMobileFactor(f) }
+
+    /** 切换检测档位（省电/默认/激进）：四项检测参数一次写完 */
+    fun setPreset(p: MonitorPreset) = viewModelScope.launch {
+        Graph.settings.setDetectProfile(
+            intervalSec = p.intervalSec,
+            mobileFactor = p.mobileFactor,
+            confirmTimes = p.confirmTimes,
+            cooldownMin = p.cooldownMin
+        )
+        notify("已切换到「${p.label}」：${p.hint}")
+    }
     fun setWifiOnly(v: Boolean) = viewModelScope.launch { Graph.settings.setWifiOnly(v) }
     fun setQuiet(enabled: Boolean, start: Int, end: Int, noNotify: Boolean) =
         viewModelScope.launch { Graph.settings.setQuiet(enabled, start, end, noNotify) }

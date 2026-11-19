@@ -108,6 +108,20 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setPollInterval(sec: Int) = edit { it[Keys.INTERVAL] = sec.coerceIn(60, 600) }
     suspend fun setMobileFactor(f: Int) = edit { it[Keys.MOBILE_FACTOR] = f.coerceIn(1, 6) }
+
+    /**
+     * 一次性写入整套检测参数（三档预设用）。
+     *
+     * 必须合并成一次 edit：拆成四次写，界面会先看到「间隔已变、其它还是旧值」的
+     * 中间状态，档位判定瞬间变成「自定义」，看起来像点错了。
+     * 不动 wifiOnly——那是流量策略，不属于检测节奏。
+     */
+    suspend fun setDetectProfile(intervalSec: Int, mobileFactor: Int, confirmTimes: Int, cooldownMin: Int) = edit {
+        it[Keys.INTERVAL] = intervalSec.coerceIn(60, 600)
+        it[Keys.MOBILE_FACTOR] = mobileFactor.coerceIn(1, 6)
+        it[Keys.CONFIRM_TIMES] = confirmTimes.coerceIn(1, 3)
+        it[Keys.COOLDOWN_MIN] = cooldownMin.coerceIn(0, 120)
+    }
     suspend fun setWifiOnly(v: Boolean) = edit { it[Keys.WIFI_ONLY] = v }
     suspend fun setQuiet(enabled: Boolean, startMin: Int, endMin: Int, noNotify: Boolean) = edit {
         it[Keys.QUIET_ENABLED] = enabled

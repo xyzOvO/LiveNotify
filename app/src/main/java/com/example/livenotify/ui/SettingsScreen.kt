@@ -110,7 +110,9 @@ fun SettingsScreen(
     /** 打开 B 站数据页（不指定主播，进去自己选） */
     onOpenStats: () -> Unit = {},
     /** 打开平台健康诊断页 */
-    onOpenDiagnostic: () -> Unit = {}
+    onOpenDiagnostic: () -> Unit = {},
+    /** 打开检测详细设置页（逐项调间隔/降频/确认次数/提醒间隔） */
+    onOpenDetectDetail: () -> Unit = {}
 ) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val updateState by vm.update.collectAsStateWithLifecycle()
@@ -203,65 +205,20 @@ fun SettingsScreen(
             item { GroupTitle("检测") }
             item {
                 SettingsCard {
-                    SliderSetting(
-                        title = "轮询间隔",
-                        valueText = formatInterval(settings.pollIntervalSec),
-                        value = settings.pollIntervalSec.coerceIn(MIN_POLL, MAX_POLL).toFloat(),
-                        range = MIN_POLL.toFloat()..MAX_POLL.toFloat(),
-                        steps = POLL_STEPS,
-                        subtitle = "周期从本轮开始算，检测耗时已经含在里面；越短越及时，也越费电。" +
-                            "当前约每天 ${86_400 / settings.pollIntervalSec.coerceAtLeast(1)} 轮（Wi-Fi 下），" +
-                            "单轮超时会跳过下一次，不会补跑。",
-                        onChange = { vm.setPollInterval(it.roundToInt()) }
+                    // 大多数用户只需要「快一点 / 省一点」这种档位，不用理解四个参数。
+                    // 想细调的人走「详细设置」，那里才出现滑块。
+                    DetectPresetBlock(
+                        settings = settings,
+                        onPick = vm::setPreset,
+                        onOpenDetail = onOpenDetectDetail
                     )
                     ItemDivider()
                     SettingSwitch(
                         title = "仅 Wi-Fi 下检测",
-                        subtitle = "开启后移动网络下完全停止检测、不产生流量；连上 Wi-Fi 自动继续。",
+                        subtitle = "开启后移动网络下完全停止检测、不产生流量；连上 Wi-Fi 自动继续。" +
+                            "它属于流量策略，不会被上面的档位改动。",
                         checked = settings.wifiOnly,
                         onChange = vm::setWifiOnly
-                    )
-                    ItemDivider()
-                    SliderSetting(
-                        title = "移动网络降频",
-                        valueText = "×${settings.mobileFactor}",
-                        value = settings.mobileFactor.toFloat(),
-                        range = 1f..6f,
-                        steps = 4,
-                        subtitle = if (settings.wifiOnly) {
-                            "已开启「仅 Wi-Fi 下检测」，移动网络下不检测，此项不生效。"
-                        } else {
-                            "移动网络下按「基础间隔 × ${settings.mobileFactor}」算，" +
-                                "即每 ${formatInterval(settings.pollIntervalSec * settings.mobileFactor)}一次；" +
-                                "Wi-Fi 下仍是 ${formatInterval(settings.pollIntervalSec)}。"
-                        },
-                        onChange = { vm.setMobileFactor(it.roundToInt()) }
-                    )
-                    ItemDivider()
-                    SubHeader("推送判定")
-                    SliderSetting(
-                        title = "连续确认次数",
-                        valueText = "${settings.confirmTimes} 次",
-                        value = settings.confirmTimes.toFloat(),
-                        range = 1f..3f,
-                        steps = 1,
-                        subtitle = if (settings.confirmTimes <= 1) {
-                            "检测到开播就推送，最及时；接口抖动时可能误报。"
-                        } else {
-                            "连续 ${settings.confirmTimes} 次检测到开播才推送，能过滤抖动，" +
-                                "代价是最多晚约 ${formatInterval(settings.pollIntervalSec * (settings.confirmTimes - 1))}。"
-                        },
-                        onChange = { vm.setConfirmTimes(it.roundToInt()) }
-                    )
-                    ItemDivider()
-                    SliderSetting(
-                        title = "同一主播提醒间隔",
-                        valueText = if (settings.cooldownMin == 0) "不限制" else "${settings.cooldownMin} 分钟",
-                        value = settings.cooldownMin.toFloat(),
-                        range = 0f..60f,
-                        steps = 11,
-                        subtitle = "这段时间内同一位主播不会再次提醒；0 表示不限制。",
-                        onChange = { vm.setCooldownMin(it.roundToInt()) }
                     )
                 }
             }
@@ -708,8 +665,61 @@ private fun StatusCard(
 
 // ── 检测 / 通知 / 权限 ─────────────────────────────────────
 
+/**
+ * 检测档位块：三档 chip + 当前档位说明 + 「详细设置」入口。
+ *
+ * 命中某一档才高亮；四项参数被单独改过就显示「自定义」，不硬凑成最近的一档——
+ * 否则用户会以为自己选的是「默认」，实际跑的却是改过的参数。
+ */
 @Composable
-private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+internal fun DetectPresetBlock(
+    settings: Settings,
+    onPick: (MonitorPreset) -> Unit,
+    onOpenDetail: () -> Unit
+) {
+    val current = presetOf(settings)
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("检测频率", style = MaterialTheme.typography.bodyLarge)
+            Spacer(Modifier.weight(1f))
+            Text(
+                presetLabel(settings),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MonitorPreset.entries.forEach { p ->
+                FilterChip(
+                    selected = current == p,
+                    onClick = { onPick(p) },
+                    label = { Text(p.label) }
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            current?.hint ?: "当前参数被单独调整过，不属于任何预设；点下面「详细设置」可以逐项改，或直接选一档覆盖。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "Wi-Fi 下每 ${formatInterval(settings.pollIntervalSec)}一次" +
+                if (settings.wifiOnly) "，移动网络不检测"
+                else "，移动网络下每 ${formatInterval(settings.pollIntervalSec * settings.mobileFactor)}一次",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline
+        )
+        TextButton(onClick = onOpenDetail, contentPadding = PaddingValues(0.dp)) {
+            Text("详细设置")
+        }
+    }
+}
+
+@Composable
+internal fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -720,7 +730,7 @@ private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-private fun GroupTitle(text: String) {
+internal fun GroupTitle(text: String) {
     Text(
         text,
         style = MaterialTheme.typography.labelLarge,
@@ -731,7 +741,7 @@ private fun GroupTitle(text: String) {
 
 /** 卡片内的小标题：把「轮询参数」和「推送判定」分开，不然五项挤在一起看不出层次 */
 @Composable
-private fun SubHeader(text: String) {
+internal fun SubHeader(text: String) {
     Text(
         text,
         style = MaterialTheme.typography.labelMedium,
@@ -741,7 +751,7 @@ private fun SubHeader(text: String) {
 }
 
 @Composable
-private fun ItemDivider() {
+internal fun ItemDivider() {
     HorizontalDivider(
         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 2.dp),
         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
@@ -806,7 +816,7 @@ private fun DualSwitchRow(
 }
 
 @Composable
-private fun SliderSetting(
+internal fun SliderSetting(
     title: String,
     valueText: String,
     value: Float,
@@ -1262,10 +1272,10 @@ private fun UpdateStatusBlock(vm: MainViewModel, state: MainViewModel.UpdateStat
 
 // ── 工具 ──────────────────────────────────────────────────
 
-private const val MIN_POLL = 60
-private const val MAX_POLL = 600
+internal const val MIN_POLL = 60
+internal const val MAX_POLL = 600
 /** 60..600、步长 30：共 19 个刻度 */
-private const val POLL_STEPS = 17
+internal const val POLL_STEPS = 17
 
 /** 把秒数说成人话：界面上再出现「120 秒」就太工程师了 */
 internal fun formatInterval(sec: Int): String {

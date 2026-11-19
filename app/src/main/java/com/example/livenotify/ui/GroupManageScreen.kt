@@ -1,5 +1,6 @@
 package com.example.livenotify.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -38,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +64,8 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
     val list by vm.streamers.collectAsStateWithLifecycle()
     val groupNames by vm.groups.collectAsStateWithLifecycle()
     val cs = MaterialTheme.colorScheme
+    // 跟组合生命周期绑定的作用域：页面退出时自动取消，别用自建 CoroutineScope 泄漏
+    val scope = rememberCoroutineScope()
 
     var selected by remember { mutableStateOf<String?>(null) } // null=全部；""=未分组；其它=组名
     var showCreate by remember { mutableStateOf(false) }
@@ -75,6 +79,10 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
     val allLive = list.count { it.enabled && it.isLive }
     val ungrouped = list.filter { it.group.isEmpty() }
     val grouped = list.filter { it.group.isNotEmpty() }
+
+    // 本页有内部层级（列表 ⇄ 分组详情），系统返回/侧滑必须先退到列表，
+    // 而不是一下子 pop 掉整个分组页回首页。enabled=false 时让外层的导航栈接管。
+    BackHandler(enabled = selected != null) { selected = null }
 
     Scaffold(
         topBar = {
@@ -108,7 +116,7 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
                 }
                 item {
                     GroupRow(
-                        label = "未分组", count = ungrouped.size,
+                        label = GROUP_DEFAULT, count = ungrouped.size,
                         live = ungrouped.count { it.enabled && it.isLive },
                         color = Color(UNGROUPED_COLOR),
                         onClick = { selected = "" }, canManage = false
@@ -156,13 +164,21 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
     }
 
     if (showCreate) {
-       GroupNameInput(
+        GroupNameInput(
             title = "新建分组",
             label = "分组名",
             onConfirm = { raw ->
-                val name = vm.createGroup(raw)
-                if (name != null) selected = name
                 showCreate = false
+                scope.launch {
+                    val name = vm.createGroup(raw)
+                    if (name == null) {
+                        vm.notify("分组名不能为空，且不超过 24 个字")
+                    } else {
+                        // 建完直接进这个组，用户能立刻看到「往这里放主播」的引导
+                        selected = name
+                        vm.notify("已新建分组「$name」")
+                    }
+                }
             },
             onDismiss = { showCreate = false }
         )
@@ -173,8 +189,11 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
             label = "新名称",
             initial = old,
             onConfirm = { raw ->
-                scopeLaunch { vm.renameGroup(old, raw) }
                 renameFor = null
+                scope.launch {
+                    val err = vm.renameGroup(old, raw)
+                    vm.notify(err ?: "已重命名分组")
+                }
             },
             onDismiss = { renameFor = null }
         )
@@ -183,7 +202,7 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
         AlertDialog(
             onDismissRequest = { deleteFor = null },
             title = { Text("删除分组「$name」") },
-            text = { Text("组内主播会转为「未分组」，不会被取消关注或删除。") },
+            text = { Text("组内主播会转为「${GROUP_DEFAULT}」，不会被取消关注或删除。") },
             confirmButton = {
                 TextButton(onClick = {
                     vm.deleteGroup(name)
@@ -200,9 +219,12 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
             groups = groupNames,
             onPick = { name -> vm.setGroup(s, name); moveFor = null },
             onCreate = { raw ->
-                val name = vm.createGroup(raw, moveStreamer = s)
-                if (name != null && selected == null) Unit
                 moveFor = null
+                scope.launch {
+                    val name = vm.createGroup(raw, moveStreamer = s)
+                    if (name == null) vm.notify("分组名不能为空，且不超过 24 个字")
+                    else vm.notify("已新建分组「$name」并移入")
+                }
             },
             onDismiss = { moveFor = null }
         )
@@ -211,18 +233,10 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
         SimpleStreamerActions(
             s = s,
             onMove = { moveFor = s; actionFor = null },
-            onToggle = { scopeLaunch { vm.setStreamerEnabled(s, !s.enabled) }; actionFor = null },
+            onToggle = { scope.launch { vm.setStreamerEnabled(s, !s.enabled) }; actionFor = null },
             onRemove = { vm.remove(s); actionFor = null },
             onDismiss = { actionFor = null }
         )
-    }
-}
-
-/** 轻量协程启动：本文件只需要 fire-and-forget */
-private fun scopeLaunch(block: suspend () -> Unit) {
-    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
-        @Suppress("UNUSED_EXPRESSION")
-        block()
     }
 }
 
@@ -317,7 +331,7 @@ private fun MoveGroupSheet(
         title = { Text("移动「${streamer.nickname}」到") },
         text = {
             Column(Modifier.horizontalScroll(rememberScrollState())) {
-                listOf("" to "未分组").plus(groups.map { it to it }).forEach { (key, label) ->
+                listOf("" to GROUP_DEFAULT).plus(groups.map { it to it }).forEach { (key, label) ->
                     TextButton(onClick = { onPick(key) }) {
                         Text(if (key == streamer.group) "$label ✓" else label, modifier = Modifier.fillMaxWidth())
                     }

@@ -218,7 +218,6 @@ fun MainScreen(
     }
     var collapsedGroups by rememberSaveable { mutableStateOf(setOf<String>()) }
     val groupNames by vm.groups.collectAsStateWithLifecycle()
-    val groupCounts = remember(list) { list.groupBy { it.group }.mapValues { it.value.size } }
 
     // 关闭搜索 = 结束这一轮筛选：条件和面板一起清掉，避免「关了搜索但列表还是筛过的」
     val closeSearch: () -> Unit = {
@@ -256,13 +255,11 @@ fun MainScreen(
     /** 恢复关注要联网取一次快照，期间锁住按钮避免重复点击 */
     var enabledBusy by remember { mutableStateOf(false) }
 
-    // ── 分组管理相关弹窗 ──
-    /** 分组管理总入口（新建 / 重命名 / 删除） */
-    var groupManageOpen by remember { mutableStateOf(false) }
+    // ── 分组相关弹窗 ──
+    // 新建/改名/删除全部在独立的 GroupManageScreen 里做（首页「分组」按钮进去），
+    // 这里只留「把某位主播移到哪个组」——那是卡片操作，不该跳页。
     /** 要把某位主播移到哪个组；null 表示没在移动 */
     var moveFor by remember { mutableStateOf<StreamerEntity?>(null) }
-    /** 正在重命名的分组名 */
-    var renameFor by remember { mutableStateOf<String?>(null) }
 
     // 分享文案只在这里预填，绝不自动落库：仍然由用户看到识别结果后点「添加」
     LaunchedEffect(sharedText) {
@@ -482,7 +479,7 @@ fun MainScreen(
                                     FilterChip(
                                         selected = groupFilter == "",
                                         onClick = { groupFilter = if (groupFilter == "") null else "" },
-                                        label = { Text("未分组") }
+                                        label = { Text(GROUP_DEFAULT) }
                                     )
                                     groupNames.forEach { g ->
                                         FilterChip(
@@ -665,25 +662,6 @@ fun MainScreen(
         )
     }
 
-    if (groupManageOpen) {
-        GroupManageDialog(
-            groups = groupNames,
-            groupCounts = groupCounts,
-            onRename = { renameFor = it; groupManageOpen = false },
-            onDelete = { name ->
-                vm.deleteGroup(name)
-                collapsedGroups = collapsedGroups - name
-                vm.notify("已删除分组「$name」，组内主播转为未分组")
-            },
-            onCreate = { raw ->
-                val name = vm.createGroup(raw)
-                if (name == null) vm.notify("分组名不能为空，且不超过 24 个字")
-                else vm.notify("已新建分组「$name」")
-            },
-            onDismiss = { groupManageOpen = false }
-        )
-    }
-
     moveFor?.let { s ->
         MoveGroupDialog(
             streamer = s,
@@ -691,39 +669,17 @@ fun MainScreen(
             onPick = { name ->
                 vm.setGroup(s, name)
                 moveFor = null
-                vm.notify(if (name.isEmpty()) "已移到未分组" else "已移到「$name」")
+                vm.notify(if (name.isEmpty()) "已移到${GROUP_DEFAULT}" else "已移到「$name」")
             },
             onCreate = { raw ->
-                val name = vm.createGroup(raw, moveStreamer = s)
-                moveFor = null
-                if (name == null) vm.notify("分组名不能为空，且不超过 24 个字")
-                else vm.notify("已新建分组「$name」并移入")
-            },
-            onDismiss = { moveFor = null }
-        )
-    }
-
-    renameFor?.let { old ->
-        RenameGroupDialog(
-            oldName = old,
-            onConfirm = { raw ->
                 scope.launch {
-                    val err = vm.renameGroup(old, raw)
-                    if (err != null) vm.notify(err)
-                    else {
-                        // 同步折叠状态里的组名，避免改名后折叠状态丢失
-                        if (old in collapsedGroups) {
-                            val newName = vm.normalizeGroupName(raw)
-                            if (newName != null) {
-                                collapsedGroups = (collapsedGroups - old) + newName
-                            }
-                        }
-                        vm.notify("已重命名分组")
-                    }
-                    renameFor = null
+                    val name = vm.createGroup(raw, moveStreamer = s)
+                    moveFor = null
+                    if (name == null) vm.notify("分组名不能为空，且不超过 24 个字")
+                    else vm.notify("已新建分组「$name」并移入")
                 }
             },
-            onDismiss = { renameFor = null }
+            onDismiss = { moveFor = null }
         )
     }
 
@@ -817,8 +773,11 @@ internal fun groupVisible(list: List<StreamerEntity>): List<GroupSection> {
     return out
 }
 
-/** 分组头的显示名：空串显示「未分组」 */
-internal fun groupLabel(name: String): String = if (name.isEmpty()) "未分组" else name
+/** 分组头的显示名：空串显示「默认」。 */
+internal fun groupLabel(name: String): String = if (name.isEmpty()) GROUP_DEFAULT else name
+
+/** 未分组在界面上的叫法。用户对「未分组」无感，叫「默认」更符合直觉。 */
+internal const val GROUP_DEFAULT = "默认"
 
 internal fun homeStatusLine(
     monitoring: Boolean,
@@ -1367,74 +1326,6 @@ private fun GroupHeader(
     }
 }
 
-/**
- * 分组管理弹窗：列出所有已有组，可重命名 / 删除；底部新建分组。
- * 删除只让组内主播回落「未分组」，不删主播（由 VM 保证）。
- */
-@Composable
-private fun GroupManageDialog(
-    groups: List<String>,
-    groupCounts: Map<String, Int>,
-    onRename: (String) -> Unit,
-    onDelete: (String) -> Unit,
-    onCreate: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var newName by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("管理分组") },
-        text = {
-            Column {
-                if (groups.isEmpty()) {
-                    Text(
-                        "还没有分组。在下方输入名字新建，或在主播的「移动分组」里创建。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                } else {
-                    Column(Modifier.horizontalScroll(rememberScrollState())) {
-                        groups.forEach { g ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "${groupLabel(g)}  (${groupCounts[g] ?: 0})",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier.weight(1f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                TextButton(onClick = { onRename(g) }) { Text("改名") }
-                                TextButton(onClick = { onDelete(g) }) { Text("删除") }
-                            }
-                        }
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = newName,
-                    onValueChange = { newName = it },
-                    label = { Text("新分组名") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                TextButton(
-                    onClick = {
-                        if (newName.isNotBlank()) {
-                            onCreate(newName)
-                            newName = ""
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("新建分组", modifier = Modifier.fillMaxWidth()) }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } }
-    )
-}
-
 /** 移动分组弹窗：选现有组 / 未分组，或新建一个组并把该主播移进去。 */
 @Composable
 private fun MoveGroupDialog(
@@ -1451,7 +1342,7 @@ private fun MoveGroupDialog(
         text = {
             Column {
                 // 未分组 + 已有组
-                listOf("" to "未分组").plus(groups.map { it to groupLabel(it) }).forEach { (key, label) ->
+                listOf("" to GROUP_DEFAULT).plus(groups.map { it to groupLabel(it) }).forEach { (key, label) ->
                     TextButton(
                         onClick = { onPick(key) },
                         modifier = Modifier.fillMaxWidth()
@@ -1480,31 +1371,6 @@ private fun MoveGroupDialog(
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
-}
-
-/** 重命名分组弹窗 */
-@Composable
-private fun RenameGroupDialog(
-    oldName: String,
-    onConfirm: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var value by remember { mutableStateOf(groupLabel(oldName)) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("重命名分组") },
-        text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                label = { Text("分组名") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text("保存") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }
 

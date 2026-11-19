@@ -7,10 +7,15 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [StreamerEntity::class, LiveSessionEntity::class], version = 6, exportSchema = true)
+@Database(
+    entities = [StreamerEntity::class, LiveSessionEntity::class, GroupEntity::class],
+    version = 7,
+    exportSchema = true
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun streamerDao(): StreamerDao
     abstract fun liveSessionDao(): LiveSessionDao
+    abstract fun groupDao(): GroupDao
 
     companion object {
         @Volatile
@@ -60,6 +65,17 @@ abstract class AppDatabase : RoomDatabase() {
                     "ON `live_sessions` (`anchorId`, `platformId`)",
                 "CREATE INDEX IF NOT EXISTS `index_live_sessions_endAtMs` " +
                     "ON `live_sessions` (`endAtMs`)"
+            ),
+            // v6 → v7：新增分组名册表。
+            // 早先分组只是主播行上的一个字段，空分组无处存储 →「新建分组」回到列表就消失。
+            // 建表后把库里已存在的分组灌进去（DISTINCT + 忽略空串），老用户升级不丢组。
+            (6 to 7) to listOf(
+                "CREATE TABLE IF NOT EXISTS `groups` (" +
+                    "`name` TEXT NOT NULL, " +
+                    "`sortOrder` INTEGER NOT NULL, " +
+                    "PRIMARY KEY(`name`))",
+                "INSERT OR IGNORE INTO `groups` (`name`, `sortOrder`) " +
+                    "SELECT `group`, 0 FROM `streamers` WHERE `group` != '' GROUP BY `group`"
             )
         )
 
@@ -74,6 +90,7 @@ abstract class AppDatabase : RoomDatabase() {
         private val MIGRATION_3_4 = migrationOf(3, 4)
         private val MIGRATION_4_5 = migrationOf(4, 5)
         private val MIGRATION_5_6 = migrationOf(5, 6)
+        private val MIGRATION_6_7 = migrationOf(6, 7)
 
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
@@ -82,7 +99,10 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "livenotify.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(
+                        MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
+                        MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7
+                    )
                     .build()
                     .also { instance = it }
             }

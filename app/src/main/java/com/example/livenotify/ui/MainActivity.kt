@@ -72,56 +72,96 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             LiveNotifyTheme {
-                var screen by rememberSaveable { mutableStateOf(Screen.Main) }
+                // 导航栈：二级页返回上一级，而不是一律回首页。
+                // 例如 设置 → 平台诊断，返回应该回到设置；首页 → 历史，返回回首页。
+                // 只存 Screen 名（String 列表能被 rememberSaveable 序列化），不存对象。
+                var backStack by rememberSaveable {
+                    mutableStateOf(listOf(Screen.Main.name))
+                }
+                val screen = Screen.entries.firstOrNull { it.name == backStack.last() } ?: Screen.Main
+                // 同一个页面不重复入栈，否则连点两下要按两次返回才退出
+                fun go(next: Screen) {
+                    if (next.name != backStack.last()) backStack = backStack + next.name
+                }
+                // 回上一级；栈底就是首页，不动它（交给系统默认的退出行为）
+                fun back() {
+                    if (backStack.size > 1) backStack = backStack.dropLast(1)
+                }
                 // B 站数据页要带上是「看哪个主播」，用 0 表示由页面自己挑列表里第一个
                 var statsUid by rememberSaveable { mutableStateOf(0L) }
-                // 拦截系统返回与边缘侧滑手势：二级页面先回主页面，而不是直接退出到桌面。
-                // 主页面不拦截，返回键/侧滑保持「退出 App」的默认行为。
-                // 分享进来时先回到主页（用户可能正停在设置页/数据页），再交给 MainScreen 预填
+                // 拦截系统返回与边缘侧滑手势：非首页先回上一级，而不是直接退出到桌面。
+                // 首页不拦截，返回键/侧滑保持「退出 App」的默认行为。
+                // 分享进来时直接清栈回首页（用户可能正停在设置页/数据页），再交给 MainScreen 预填
                 LaunchedEffect(shareRevision) {
-                    if (shareRevision > 0 && screen != Screen.Main) screen = Screen.Main
+                    if (shareRevision > 0 && backStack != listOf(Screen.Main.name)) {
+                        backStack = listOf(Screen.Main.name)
+                    }
                 }
-                BackHandler(enabled = screen != Screen.Main) { screen = Screen.Main }
+                BackHandler(enabled = backStack.size > 1) { back() }
+                // 每个页面各自的「可保存状态」（列表滚动位置、搜索框内容、筛选条件）。
+                // 没有它，从设置进诊断再返回会跳回顶部，主页的搜索条件也会被清空。
+                // 注意只保留 rememberSaveable 的状态，普通 remember（比如弹窗开关）不保留，
+                // 所以返回时不会自带一个没关掉的对话框。
+                val pageStates = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
                 when (screen) {
-                    Screen.Main -> MainScreen(
-                        vm = androidx.lifecycle.viewmodel.compose.viewModel(),
-                        onOpenSettings = { screen = Screen.Settings },
-                        permissionRevision = permissionRevision,
-                        onOpenStats = { uid ->
-                            statsUid = uid
-                            screen = Screen.Stats
-                        },
-                        onOpenHistory = { screen = Screen.History },
-                        onOpenGroups = { screen = Screen.GroupManage },
-                        sharedText = pendingShareText,
-                        onConsumeSharedText = { pendingShareText = null }
-                    )
-                    Screen.Settings -> SettingsScreen(
-                        vm = androidx.lifecycle.viewmodel.compose.viewModel(),
-                        onBack = { screen = Screen.Main },
-                        onOpenStats = {
-                            statsUid = 0L
-                            screen = Screen.Stats
-                        },
-                        onOpenDiagnostic = { screen = Screen.Diagnostic }
-                    )
-                    Screen.Stats -> StatsScreen(
-                        vm = androidx.lifecycle.viewmodel.compose.viewModel<StatsViewModel>(),
-                        initialUid = statsUid,
-                        onBack = { screen = Screen.Main }
-                    )
-                    Screen.History -> HistoryScreen(
-                        vm = androidx.lifecycle.viewmodel.compose.viewModel<HistoryViewModel>(),
-                        onBack = { screen = Screen.Main }
-                    )
-                    Screen.GroupManage -> GroupManageScreen(
-                        vm = androidx.lifecycle.viewmodel.compose.viewModel<MainViewModel>(),
-                        onBack = { screen = Screen.Main }
-                    )
-                    Screen.Diagnostic -> DiagnosticScreen(
-                        vm = androidx.lifecycle.viewmodel.compose.viewModel<MainViewModel>(),
-                        onBack = { screen = Screen.Main }
-                    )
+                    Screen.Main -> pageStates.SaveableStateProvider(Screen.Main.name) {
+                        MainScreen(
+                            vm = androidx.lifecycle.viewmodel.compose.viewModel(),
+                            onOpenSettings = { go(Screen.Settings) },
+                            permissionRevision = permissionRevision,
+                            onOpenStats = { uid ->
+                                statsUid = uid
+                                go(Screen.Stats)
+                            },
+                            onOpenHistory = { go(Screen.History) },
+                            onOpenGroups = { go(Screen.GroupManage) },
+                            sharedText = pendingShareText,
+                            onConsumeSharedText = { pendingShareText = null }
+                        )
+                    }
+                    Screen.Settings -> pageStates.SaveableStateProvider(Screen.Settings.name) {
+                        SettingsScreen(
+                            vm = androidx.lifecycle.viewmodel.compose.viewModel(),
+                            onBack = { back() },
+                            onOpenStats = {
+                                statsUid = 0L
+                                go(Screen.Stats)
+                            },
+                            onOpenDiagnostic = { go(Screen.Diagnostic) },
+                            onOpenDetectDetail = { go(Screen.DetectDetail) }
+                        )
+                    }
+                    Screen.Stats -> pageStates.SaveableStateProvider(Screen.Stats.name) {
+                        StatsScreen(
+                            vm = androidx.lifecycle.viewmodel.compose.viewModel<StatsViewModel>(),
+                            initialUid = statsUid,
+                            onBack = { back() }
+                        )
+                    }
+                    Screen.History -> pageStates.SaveableStateProvider(Screen.History.name) {
+                        HistoryScreen(
+                            vm = androidx.lifecycle.viewmodel.compose.viewModel<HistoryViewModel>(),
+                            onBack = { back() }
+                        )
+                    }
+                    Screen.GroupManage -> pageStates.SaveableStateProvider(Screen.GroupManage.name) {
+                        GroupManageScreen(
+                            vm = androidx.lifecycle.viewmodel.compose.viewModel<MainViewModel>(),
+                            onBack = { back() }
+                        )
+                    }
+                    Screen.Diagnostic -> pageStates.SaveableStateProvider(Screen.Diagnostic.name) {
+                        DiagnosticScreen(
+                            vm = androidx.lifecycle.viewmodel.compose.viewModel<MainViewModel>(),
+                            onBack = { back() }
+                        )
+                    }
+                    Screen.DetectDetail -> pageStates.SaveableStateProvider(Screen.DetectDetail.name) {
+                        DetectDetailScreen(
+                            vm = androidx.lifecycle.viewmodel.compose.viewModel<MainViewModel>(),
+                            onBack = { back() }
+                        )
+                    }
                 }
             }
         }
@@ -139,4 +179,4 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Screen { Main, Settings, Stats, History, GroupManage, Diagnostic }
+enum class Screen { Main, Settings, Stats, History, GroupManage, Diagnostic, DetectDetail }

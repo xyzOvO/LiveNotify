@@ -53,8 +53,8 @@ class GroupTest {
     }
 
     @Test
-    fun `分组头显示名空串转为未分组`() {
-        assertEquals("未分组", groupLabel(""))
+    fun `分组头显示名空串转为默认`() {
+        assertEquals("默认", groupLabel(""))
         assertEquals("游戏", groupLabel("游戏"))
     }
 
