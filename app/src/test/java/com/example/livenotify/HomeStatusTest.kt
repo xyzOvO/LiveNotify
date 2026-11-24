@@ -107,8 +107,8 @@ class HomeStatusTest {
 
     @Test
     fun `长号折叠短号原样`() {
-        assertEquals("7702…2287", briefDisplayId("7702046260467092287"))
-        assertEquals("1947277414", briefDisplayId("1947277414")) // 10 位房间号不折
+        assertEquals("1234…6789", briefDisplayId("1234567890123456789")) // 19 位折叠
+        assertEquals("1234567890", briefDisplayId("1234567890")) // 10 位房间号不折
         assertEquals("123456789012", briefDisplayId("123456789012")) // 12 位仍不折
         assertEquals("123", briefDisplayId("123"))
     }
