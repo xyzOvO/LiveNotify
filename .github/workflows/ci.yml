@@ -153,10 +153,32 @@ jobs:
           echo "版本校验通过：v$ACTUAL_NAME（versionCode $ACTUAL_CODE）"
           [ -n "$PREV_CODE" ] && echo "覆盖安装校验通过：高于 $PREV_TAG（versionCode $PREV_CODE）"
 
+      # GitHub 的自动生成只输出一行「Full Changelog」：本项目提交全部直推 main、没有 PR 可归类，
+      # App 里「更新内容」因此形同空文。改为自己按 git log 生成，保证有人类可读的条目。
+      # checkout 已配 fetch-depth: 0，能拿到完整历史。
+      - name: 生成 Release 说明
+        run: |
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          {
+            echo "## 本版改动"
+            echo ""
+            if [ -n "$PREV" ]; then
+              git log --pretty=format:"- %s" "$PREV..$GITHUB_REF_NAME"
+            else
+              git log --pretty=format:"- %s" -20
+            fi
+            echo ""
+            if [ -n "$PREV" ]; then
+              echo ""
+              echo "**完整对比**：https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${GITHUB_REF_NAME}"
+            fi
+          } > release_notes.md
+          echo "----- 生成的说明 -----"
+          cat release_notes.md
+
       - name: 挂到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/release/app-release.apk
-          # 以前 Release 说明一律是空白，用户点进去只能看到附件。
-          # 让 GitHub 按提交记录自动生成变更列表，Release 页面至少有东西可读。
-          generate_release_notes: true
+          # body_path 与 generate_release_notes 不能共存，后者会把正文覆盖成一行 changelog
+          body_path: release_notes.md
