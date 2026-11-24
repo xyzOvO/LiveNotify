@@ -4,9 +4,12 @@ import com.example.livenotify.monitor.MonitorEngine
 import com.example.livenotify.monitor.NetSnapshot
 import com.example.livenotify.monitor.NetStatus
 import com.example.livenotify.monitor.NetworkKind
+import com.example.livenotify.ui.briefDisplayId
+import com.example.livenotify.ui.homePausedBadge
 import com.example.livenotify.ui.homeStatusLine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -81,22 +84,33 @@ class HomeStatusTest {
     }
 
     @Test
-    fun `部分暂停单独提示`() {
-        assertEquals(
-            "监控中 · 3 位都很安静 · 1 位已暂停",
-            homeStatusLine(true, 3, 0, 1, skip = null)
-        )
+    fun `暂停数拆到徽标主行不再拼`() {
+        // 主行不再带暂停数——窄屏折行会被标题栏图标压住
+        assertEquals("监控中 · 3 位都很安静", homeStatusLine(true, 3, 0, 1, skip = null))
+        assertEquals("1 位暂停", homePausedBadge(1, 3))
+        // 「全部已暂停」已说明一切，徽标不再重复
+        assertNull(homePausedBadge(3, 0))
+        assertNull(homePausedBadge(0, 3))
     }
 
     @Test
-    fun `跳过时暂停数仍要带上`() {
+    fun `跳过时主行改口且徽标仍带暂停数`() {
         val line = homeStatusLine(
             monitoring = true, total = 4, liveCount = 0, pausedCount = 1,
             skip = MonitorEngine.SkipReason.NO_NETWORK
         )
         assertTrue(line.contains("等待网络 · 4 位待检测"))
-        assertTrue(line.contains("1 位已暂停"))
         assertFalse(line.contains("安静"))
+        assertFalse(line.contains("暂停"))
+        assertEquals("1 位暂停", homePausedBadge(1, 4))
+    }
+
+    @Test
+    fun `长号折叠短号原样`() {
+        assertEquals("7702…2287", briefDisplayId("7702046260467092287"))
+        assertEquals("1947277414", briefDisplayId("1947277414")) // 10 位房间号不折
+        assertEquals("123456789012", briefDisplayId("123456789012")) // 12 位仍不折
+        assertEquals("123", briefDisplayId("123"))
     }
 
     @Test

@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -181,7 +182,7 @@ fun SettingsScreen(
                 }
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) }
+        snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier
@@ -304,10 +305,14 @@ fun SettingsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(Modifier.weight(1f)) {
-                                Text("时段内不推送", style = MaterialTheme.typography.bodyLarge)
+                                // 标题必须跟开关状态走，否则关着时「不推送」与副文案「仍会推送」自相矛盾
                                 Text(
-                                    if (settings.quietNoNotify) "关掉后只降频，提醒照常弹出。"
-                                    else "已关：该时段只是降频，仍会推送。",
+                                    if (settings.quietNoNotify) "时段内不推送" else "时段内只降频",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                                Text(
+                                    if (settings.quietNoNotify) "该时段内发现的开播不提醒，不补发。"
+                                    else "提醒照常弹出，只是把检测间隔拉长以省电。",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.outline
                                 )
@@ -364,7 +369,7 @@ fun SettingsScreen(
                     )
                     PermissionRow(
                         label = "通知权限",
-                        value = if (notifyAllowed) "已允许" else "未允许",
+                        value = if (notifyAllowed) "已开启" else "未开启",
                         ok = notifyAllowed,
                         action = "去设置",
                         onAction = { NotificationHelper.openNotificationSettings(context) }
@@ -513,7 +518,7 @@ fun SettingsScreen(
                                 enabled = updateState !is MainViewModel.UpdateState.Checking &&
                                     (updateState as? MainViewModel.UpdateState.Available)?.downloading != true,
                                 onClick = { vm.checkUpdate() }
-                            ) { Text(if (updateState is MainViewModel.UpdateState.Checking) "检查中…" else "检查更新") }
+                            ) { Text(if (updateState is MainViewModel.UpdateState.Checking) "检查中…" else "立即检查") }
                             OutlinedButton(onClick = { openReleases(context) }) { Text("全部版本") }
                         }
                         Spacer(Modifier.height(4.dp))
@@ -676,7 +681,7 @@ private fun StatusCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = cs.outline
                 )
-                TextButton(onClick = onRestart, contentPadding = PaddingValues(0.dp)) {
+                TextButton(onClick = onRestart, contentPadding = PaddingValues(0.dp), modifier = Modifier.heightIn(min = Dimens.MinTouch)) {
                     Text("立即重启检测")
                 }
             }
@@ -733,7 +738,7 @@ internal fun DetectPresetBlock(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.outline
         )
-        TextButton(onClick = onOpenDetail, contentPadding = PaddingValues(0.dp)) {
+        TextButton(onClick = onOpenDetail, contentPadding = PaddingValues(0.dp), modifier = Modifier.heightIn(min = Dimens.MinTouch)) {
             Text("详细设置")
         }
     }
@@ -1218,7 +1223,7 @@ private fun AboutCard(context: Context) {
                 color = MaterialTheme.colorScheme.outline
             )
             // 直接显示完整地址，方便用户看清来源；点击交给系统选择浏览器或 GitHub 客户端
-            TextButton(onClick = { openProject(context) }, contentPadding = PaddingValues(0.dp)) {
+            TextButton(onClick = { openProject(context) }, contentPadding = PaddingValues(0.dp), modifier = Modifier.heightIn(min = Dimens.MinTouch)) {
                 Text(UpdateApi.PROJECT_PAGE, style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -1319,7 +1324,7 @@ internal fun formatInterval(sec: Int): String {
 }
 
 /** 一轮检测的耗时：几百毫秒到几十秒都可能，别显示成「0 分钟」 */
-private fun formatRound(ms: Long): String = when {
+internal fun formatRound(ms: Long): String = when {
     ms < 1_000L -> "${ms.coerceAtLeast(0L)} 毫秒"
     ms < 60_000L -> String.format(Locale.US, "%.1f 秒", ms / 1000.0)
     else -> "${ms / 60_000L} 分 ${(ms % 60_000L) / 1000L} 秒"

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -46,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.livenotify.data.LiveSessionEntity
 import com.example.livenotify.platform.PlatformRegistry
+import com.example.livenotify.util.Format
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -116,6 +118,13 @@ fun HistoryScreen(vm: HistoryViewModel, onBack: () -> Unit) {
                         shape = Dimens.ShapeSmall
                     )
                     Spacer(Modifier.height(Dimens.SpaceS))
+                    // 组合筛选后不必逐组滑回起点点「全部」；有任一条件就给一个统一的清空口
+                    if (query.isNotBlank() || platformFilter != null || anchorFilter != null || dayFilter != null) {
+                        TextButton(
+                            onClick = { query = ""; platformFilter = null; anchorFilter = null; dayFilter = null },
+                            modifier = Modifier.heightIn(min = Dimens.MinTouch)
+                        ) { Text("清空筛选") }
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(Dimens.SpaceS),
@@ -124,13 +133,15 @@ fun HistoryScreen(vm: HistoryViewModel, onBack: () -> Unit) {
                         FilterChip(
                             selected = platformFilter == null,
                             onClick = { platformFilter = null },
-                            label = { Text("全部平台") }
+                            label = { Text("全部平台") },
+                            modifier = Modifier.heightIn(min = Dimens.MinTouch)
                         )
                         platforms.forEach { pid ->
                             FilterChip(
                                 selected = platformFilter == pid,
                                 onClick = { platformFilter = if (platformFilter == pid) null else pid },
-                                label = { Text(PlatformRegistry.get(pid)?.displayName ?: pid) }
+                                label = { Text(PlatformRegistry.get(pid)?.displayName ?: pid) },
+                                modifier = Modifier.heightIn(min = Dimens.MinTouch)
                             )
                         }
                     }
@@ -143,7 +154,8 @@ fun HistoryScreen(vm: HistoryViewModel, onBack: () -> Unit) {
                         FilterChip(
                             selected = anchorFilter == null,
                             onClick = { anchorFilter = null },
-                            label = { Text("全部主播") }
+                            label = { Text("全部主播") },
+                            modifier = Modifier.heightIn(min = Dimens.MinTouch)
                         )
                         streamers.forEach { s ->
                             FilterChip(
@@ -152,7 +164,8 @@ fun HistoryScreen(vm: HistoryViewModel, onBack: () -> Unit) {
                                     val key = "${s.platformId}:${s.anchorId}"
                                     anchorFilter = if (anchorFilter == key) null else key
                                 },
-                                label = { Text(s.nickname, maxLines = 1) }
+                                label = { Text(s.nickname, maxLines = 1) },
+                                modifier = Modifier.heightIn(min = Dimens.MinTouch)
                             )
                         }
                     }
@@ -165,13 +178,15 @@ fun HistoryScreen(vm: HistoryViewModel, onBack: () -> Unit) {
                         FilterChip(
                             selected = dayFilter == null,
                             onClick = { dayFilter = null },
-                            label = { Text("全部日期") }
+                            label = { Text("全部日期") },
+                            modifier = Modifier.heightIn(min = Dimens.MinTouch)
                         )
                         days.forEach { d ->
                             FilterChip(
                                 selected = dayFilter == d,
                                 onClick = { dayFilter = if (dayFilter == d) null else d },
-                                label = { Text(d) }
+                                label = { Text(d) },
+                                modifier = Modifier.heightIn(min = Dimens.MinTouch)
                             )
                         }
                     }
@@ -254,9 +269,9 @@ private fun LiveBadge(ongoing: Boolean) {
 @Composable
 private fun SessionCard(session: LiveSessionEntity, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val fmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    val start = fmt.format(Date(session.startedAtMs))
-    val end = if (session.endAtMs > 0L) fmt.format(Date(session.endAtMs)) else "进行中"
+    // 统一走 Format 工具，0/负值显示「—」而不是 1970 年
+    val start = Format.clock(session.startedAtMs)
+    val end = if (session.endAtMs > 0L) Format.clock(session.endAtMs) else "进行中"
     val duration = durationLabel(session.durationMs(System.currentTimeMillis()))
     val platform = PlatformRegistry.get(session.platformId)?.displayName ?: session.platformId
     val ongoing = session.endAtMs <= 0L
@@ -313,6 +328,8 @@ private fun SessionCard(session: LiveSessionEntity, onClick: () -> Unit) {
 @Composable
 private fun SessionDetailDialog(session: LiveSessionEntity, onDismiss: () -> Unit) {
     val full = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
+    // 0/负时间戳必须兜底，否则直接 format 会显示 1970 年
+    fun fullAt(ts: Long): String = if (ts > 0L) full.format(Date(ts)) else "—"
     val ongoing = session.endAtMs <= 0L
     val duration = durationLabel(session.durationMs(System.currentTimeMillis()))
     val platform = PlatformRegistry.get(session.platformId)?.displayName ?: session.platformId
@@ -323,11 +340,11 @@ private fun SessionDetailDialog(session: LiveSessionEntity, onDismiss: () -> Uni
             Column {
                 InfoLine("平台", platform)
                 if (session.title.isNotBlank()) InfoLine("直播标题", session.title)
-                InfoLine("观测开播", full.format(Date(session.startedAtMs)))
-                InfoLine("下播时间", if (ongoing) "进行中" else full.format(Date(session.endAtMs)))
+                InfoLine("观测开播", fullAt(session.startedAtMs))
+                InfoLine("下播时间", if (ongoing) "进行中" else fullAt(session.endAtMs))
                 InfoLine("直播时长", duration)
                 if (session.startAtSec > 0L) {
-                    InfoLine("平台开播时刻", full.format(Date(session.startAtSec * 1000L)))
+                    InfoLine("平台开播时刻", fullAt(session.startAtSec * 1000L))
                     Spacer(Modifier.height(Dimens.SpaceXS))
                     Text(
                         "注：平台开播时刻来自接口，观测开播是本 App 首次发现的时间；两者可能不同。",
@@ -362,7 +379,10 @@ private fun InfoLine(label: String, value: String) {
         Text(
             value,
             style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(0.65f)
+            modifier = Modifier.weight(0.65f),
+            // 直播标题可能很长，不限行会把详情弹窗撑高、挤掉按钮
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }

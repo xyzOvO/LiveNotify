@@ -30,7 +30,9 @@ object DouyinParser {
         val status: Int,   // 2=直播中，4=未开播/已结束
         val avatar: String?,
         val createTime: Long,
-        val notFound: Boolean = false
+        val notFound: Boolean = false,
+        /** 主播的短号（如 629458933），web_rid 会变但短号稳定，用于复查最新房间 */
+        val ownerShortId: String = ""
     )
 
     /**
@@ -69,7 +71,8 @@ object DouyinParser {
             title = findString(window, "title") ?: "",
             status = status,
             avatar = findAvatar(text),
-            createTime = findLong(window, "createTime") ?: 0L
+            createTime = findLong(window, "createTime") ?: 0L,
+            ownerShortId = findOwnerShortId(text)
         )
     }
 
@@ -86,6 +89,20 @@ object DouyinParser {
             val w = text.substring(idx, (idx + 4000).coerceAtMost(text.length))
             val nick = findString(w, "nickname")
             if (!nick.isNullOrBlank() && nick != "\$undefined") return nick
+        }
+    }
+
+    /** 主播短号：同样要锚定 "owner":{ 再取 shortId，避免取到访客对象的占位值 */
+    private fun findOwnerShortId(text: String): String {
+        var from = 0
+        while (true) {
+            val idx = text.indexOf("\"owner\":{", from)
+            if (idx < 0) return ""
+            from = idx + 1
+            val w = text.substring(idx, (idx + 4000).coerceAtMost(text.length))
+            // 真实页面里 shortId 是不带引号的数字，必须用 findLong
+            val short = findLong(w, "shortId")
+            if (short != null && short > 0L) return short.toString()
         }
     }
 

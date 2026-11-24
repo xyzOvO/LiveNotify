@@ -1,6 +1,7 @@
 package com.example.livenotify
 
 import com.example.livenotify.platform.DouyinParser
+import com.example.livenotify.platform.DouyinPlatform
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -36,6 +37,22 @@ class DouyinParserTest {
         assertEquals("测试标题", p.title)
         assertEquals(1793240555L, p.createTime)
         assertEquals("https://p3.douyinpic.com/a.jpeg", p.avatar)
+        // web_rid 会换，短号稳定——复查最新房间全靠它
+        assertEquals("629458933", p.ownerShortId)
+    }
+
+    @Test fun `直播间链接用稳定短号不用会变的web rid`() {
+        // live.douyin.com/<19 位 web_rid> 只返回 200 App 壳页，不会跳进直播间；
+        // 只有短号才 302 到 webcast 真实房间。这条锁住不能退回 web_rid 拼链接。
+        assertEquals(
+            "https://live.douyin.com/629458933",
+            DouyinPlatform.roomUrlFor("629458933", "7711710167309814568")
+        )
+        // 短号缺失才退回 web_rid，且绝不拼出空号链接
+        assertEquals(
+            "https://live.douyin.com/7701909481856633636",
+            DouyinPlatform.roomUrlFor("", "7701909481856633636")
+        )
     }
 
     @Test fun `未开播：状态为 4 且不算房间失效`() {
@@ -45,6 +62,7 @@ class DouyinParserTest {
         assertEquals(false, p.notFound)
         // 未开播也要拿到主播名，列表里不能变成「抖音主播 123」
         assertEquals("测试主播", p.nickname)
+        assertEquals("629458933", p.ownerShortId)
     }
 
     @Test fun `昵称取主播而非访客占位值`() {

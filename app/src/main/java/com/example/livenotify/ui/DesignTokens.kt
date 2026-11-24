@@ -62,10 +62,12 @@ object StatusColors {
     fun successContainer(): Color = okContainer()
 
     @Composable
-    fun live(): Color = LiveAccent
+    // 珊瑚红/琥珀原色在浅色卡片上只有 3.7 / 2.6:1（低于 4.5），
+    // 文字态状态色按主题加深；LiveAccent/Warning 原色留给图表填充不变。
+    fun live(): Color = if (EffectiveDark.isDark) LiveAccent else Color(LIVE_TEXT_LIGHT)
 
     @Composable
-    fun warning(): Color = Warning
+    fun warning(): Color = if (EffectiveDark.isDark) Warning else Color(WARNING_TEXT_LIGHT)
 
     @Composable
     fun neutral(): Color = MaterialTheme.colorScheme.outline
@@ -77,3 +79,7 @@ object StatusColors {
 
 /** 警告琥珀色，深浅各一版 */
 val Warning = Color(0xFFE08A1E)
+
+/** 浅色主题下的状态文字色：原色对白底对比不足，这里加深到 ≥4.5:1 */
+internal val LIVE_TEXT_LIGHT = 0xFFC42B34L
+internal val WARNING_TEXT_LIGHT = 0xFFA85C05L

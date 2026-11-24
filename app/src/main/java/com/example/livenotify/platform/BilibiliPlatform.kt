@@ -115,7 +115,7 @@ object BilibiliPlatform : LivePlatform {
                             uid,
                             Snapshot(
                                 anchorId = uid,
-                                nickname = item.optString("uname").ifBlank { "B站主播 $displayId" },
+                                nickname = item.optString("uname").ifBlank { biliPlaceholderName(displayId) },
                                 avatarUrl = item.optString("face", "").takeIf { it.isNotBlank() },
                                 title = item.optString("title", ""),
                                 // 1=直播中；2=轮播（按未开播处理，不推送）；0=未开播

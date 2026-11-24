@@ -104,7 +104,7 @@ fun DiagnosticScreen(vm: MainViewModel, onBack: () -> Unit) {
                         Text("运行状态", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(Dimens.SpaceS))
                         Info("最近检测", if (lastRun > 0) fmt.format(Date(lastRun)) else "尚未检测")
-                        Info("上轮耗时", if (duration > 0) "$duration ms" else "—")
+                        Info("上轮耗时", if (duration > 0) formatRound(duration) else "—")
                         Info("网络", networkLabel)
                         Info("检测跳过", when (skip) {
                             com.example.livenotify.monitor.MonitorEngine.SkipReason.WIFI_ONLY -> "等待 Wi-Fi"
@@ -163,11 +163,14 @@ fun DiagnosticScreen(vm: MainViewModel, onBack: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showReport = false },
             title = { Text("诊断报告（已脱敏）") },
-            text = { Text(report) },
+            // 报告随启用平台数增长，不限高会把「复制/关闭」挤出屏幕
+            text = { NotesBox(report, maxHeight = 320.dp) },
             confirmButton = {
                 TextButton(onClick = {
                     val cm = context.getSystemService(ClipboardManager::class.java)
                     cm?.setPrimaryClip(ClipData.newPlainText("诊断报告", report))
+                    // 复制后直接关窗，不给反馈用户不知道成没成
+                    android.widget.Toast.makeText(context, "诊断报告已复制", android.widget.Toast.LENGTH_SHORT).show()
                     showReport = false
                 }) { Text("复制") }
             },

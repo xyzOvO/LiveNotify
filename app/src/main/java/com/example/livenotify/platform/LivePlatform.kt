@@ -19,6 +19,25 @@ data class Snapshot(
     val note: String? = null       // 例如「轮播中」这类附加说明
 )
 
+/** 平台接口没返回昵称时的兜底名，格式唯一来源（B 站形如「B站主播 12345」）。 */
+internal fun biliPlaceholderName(displayId: String): String = "B站主播 $displayId"
+
+/**
+ * 兜底名是「平台名 + 纯数字 ID」，看着像名字但不是真名。
+ * 它非空，`ifBlank` 拦不住；一旦写回数据库就会永久顶掉真名，通知也会一直显示它。
+ */
+internal fun isPlaceholderNickname(name: String): Boolean {
+    if (name.isBlank()) return false
+    return listOf("B站主播 ", "抖音主播 ", "斗鱼主播 ", "虎牙主播 ").any { prefix ->
+        if (!name.startsWith(prefix)) false
+        else name.removePrefix(prefix).let { rest -> rest.isNotEmpty() && rest.all { c -> c.isDigit() } }
+    }
+}
+
+/** 检测结果写回库时的昵称选择：兜底假名绝不覆盖已有真名。 */
+internal fun pickStoredNickname(incoming: String, previous: String): String =
+    if (isPlaceholderNickname(incoming)) previous else incoming.ifBlank { previous }
+
 sealed interface Outcome {
     val anchorId: String
     /** 成功拿到状态 */

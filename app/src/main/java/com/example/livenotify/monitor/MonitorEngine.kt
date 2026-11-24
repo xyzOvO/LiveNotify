@@ -10,6 +10,7 @@ import com.example.livenotify.data.StreamerEntity
 import com.example.livenotify.platform.LiveState
 import com.example.livenotify.platform.Outcome
 import com.example.livenotify.platform.PlatformRegistry
+import com.example.livenotify.platform.pickStoredNickname
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -227,7 +228,7 @@ class MonitorEngine(
                         // 默认清空待办：下播、换场、过期、被免打扰抑制都不该再补。
                         // 需要保留时在下面回填，避免每条分支都写一遍清空逻辑。
                         var updated = s.copy(
-                            nickname = snap.nickname.ifBlank { s.nickname },
+                            nickname = pickStoredNickname(snap.nickname, s.nickname),
                             avatarUrl = snap.avatarUrl ?: s.avatarUrl,
                             title = snap.title.ifBlank { s.title },
                             // 平台附注跟着最新一次检测走；本次没给就清空，避免残留旧状态

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -303,7 +304,11 @@ private fun FreshnessBar(ui: StatsViewModel.ChannelUi, onRefresh: () -> Unit) {
             )
         }
         if (showButton) {
-            TextButton(onClick = onRefresh, contentPadding = PaddingValues(0.dp)) {
+            TextButton(
+                onClick = onRefresh,
+                contentPadding = PaddingValues(0.dp),
+                modifier = Modifier.heightIn(min = Dimens.MinTouch)
+            ) {
                 Text(if (ui.loading) "刷新中…" else "刷新")
             }
         }
@@ -402,7 +407,7 @@ private fun ChannelHead(ch: ChannelStats, firstLiveAt: String) {
 private fun FansCard(points: List<FansPoint>, current: Int) {
     val cs = MaterialTheme.colorScheme
     // 带年份：粉丝历史可能跨年，只给 MM-dd 会看不出是哪一年
-    val fmt = remember { SimpleDateFormat("yy-MM-dd", Locale.getDefault()) }
+    val fmt = remember { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("粉丝走势", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -1305,6 +1310,7 @@ private fun PickerChip(text: String, selected: Boolean, onClick: () -> Unit) {
             .clip(RoundedCornerShape(50))
             .background(if (selected) cs.primary else cs.surfaceVariant.copy(alpha = 0.6f))
             .clickable(onClick = onClick)
+            .heightIn(min = Dimens.MinTouch)
             .padding(horizontal = 14.dp, vertical = 7.dp)
     )
 }
@@ -1355,9 +1361,13 @@ private fun fmtCount(n: Long): String = when {
     else -> n.toString()
 }
 
-private fun fmtMoney(v: Double): String = when {
+internal fun fmtMoney(v: Double): String = when {
+    // 生涯收入上亿时「10000.0万元」读起来费劲，和 fmtCount 的「亿」对齐
+    v >= 100_000_000 -> String.format(Locale.US, "%.1f亿元", v / 100_000_000.0)
     v >= 10_000 -> String.format(Locale.US, "%.1f万元", v / 10_000.0)
     v >= 1 -> String.format(Locale.US, "%.0f元", v)
+    // 0<v<1 原先抹成「0元」，小额打赏会被吞掉
+    v > 0 -> String.format(Locale.US, "%.1f元", v)
     else -> "0元"
 }
 

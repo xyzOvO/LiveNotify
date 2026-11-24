@@ -17,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -100,6 +102,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -219,12 +223,16 @@ fun MainScreen(
     var collapsedGroups by rememberSaveable { mutableStateOf(setOf<String>()) }
     val groupNames by vm.groups.collectAsStateWithLifecycle()
 
-    // 关闭搜索 = 结束这一轮筛选：条件和面板一起清掉，避免「关了搜索但列表还是筛过的」
-    val closeSearch: () -> Unit = {
+    // 只清筛选条件、保留搜索面板：多条件叠加时不用逐个 chip 滑回起点点「全部」
+    val clearFilters: () -> Unit = {
         query = ""
         platformFilter = null
         liveOnly = false
         groupFilter = null
+    }
+    // 关闭搜索 = 结束这一轮筛选：条件和面板一起清掉，避免「关了搜索但列表还是筛过的」
+    val closeSearch: () -> Unit = {
+        clearFilters()
         searchOpen = false
         keyboard?.hide()
     }
@@ -292,12 +300,16 @@ fun MainScreen(
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbar) },
+        // targetSdk 35 强制 edge-to-edge，M3 的 snackbarHost 插槽不避让系统栏，
+        // 不加这一层「撤销」按钮会落到手势条下面，点不到
+        snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) },
         floatingActionButton = {
             // 搜索/筛选时用不到添加，收起来免得键盘弹出后压住结果
             if (!searchOpen) {
                 ExtendedFloatingActionButton(
                     onClick = { addInitialText = null; showAdd = true },
+                    // 滚离顶部就收成小圆：长文字按钮停在右下角会压住最后一张卡片
+                    expanded = listState.firstVisibleItemIndex == 0,
                     icon = { Icon(Icons.Default.Add, contentDescription = null) },
                     text = { Text("添加关注") },
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -488,6 +500,13 @@ fun MainScreen(
                                             label = { Text(g) }
                                         )
                                     }
+                                    // 有筛选才出现，只清条件不关面板——和历史页的清空入口行为一致
+                                    if (hasFilter) {
+                                        TextButton(
+                                            onClick = clearFilters,
+                                            modifier = Modifier.heightIn(min = Dimens.MinTouch)
+                                        ) { Text("清空筛选") }
+                                    }
                                 }
                             }
                             }
@@ -514,7 +533,8 @@ fun MainScreen(
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    TextButton(onClick = closeSearch) { Text("清除筛选") }
+                                    // 只清条件、不关搜索面板；关面板是「取消」按钮的事
+                                    TextButton(onClick = clearFilters) { Text("清除筛选") }
                                     // 搜不到也可能是根本没关注：给一个直接去添加的口子
                                     TextButton(
                                         onClick = {
@@ -600,6 +620,7 @@ fun MainScreen(
             is MainViewModel.UpdateState.Available -> UpdateDialog(
                 state = st,
                 onDownload = { vm.downloadUpdate(st.info) },
+                onCancelDownload = { vm.cancelDownload() },
                 onDismiss = {
                     updateDialogOpen = false
                     vm.dismissUpdate()
@@ -687,7 +708,9 @@ fun MainScreen(
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("移除关注") },
-            text = { Text("确定不再关注「${s.nickname}」吗？") },
+            // 这里有 snackbar 撤销，所以不写「不可撤销」；但要说清历史记录会保留，
+            // 和分组页的移除确认口径一致
+            text = { Text("不再关注「${s.nickname}」？开播历史会保留，删错了还能在提示里撤销。") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -799,9 +822,19 @@ internal fun homeStatusLine(
         liveCount > 0 -> append("$liveCount / $total 位正在直播")
         else -> append("$total 位都很安静")
     }
-    // 「全部已暂停」已经说明了一切，别再拼一遍「N 位已暂停」
-    if (pausedCount > 0 && total > 0) append(" · $pausedCount 位已暂停")
+    // 暂停数不再拼进主行：窄屏上「监控中 · 11/11 位正在直播 · 1 位已暂停」会折行，
+    // 第二行被标题栏图标压住。改由标题栏末尾的徽标单独显示。
 }
+
+/** 暂停数徽标；total=0 时主行已说「全部已暂停」，别重复 */
+internal fun homePausedBadge(pausedCount: Int, total: Int): String? =
+    if (pausedCount > 0 && total > 0) "$pausedCount 位暂停" else null
+
+/** 长房间号/抖音号在卡片里折叠显示，完整 ID 在操作面板里看 */
+internal fun briefDisplayId(id: String): String =
+    // 12 位以内是常见房间号（B 站 10 位、斗鱼/虎牙 8~9 位），原样显示；
+    // 超过 12 位基本是抖音那种长号，才折叠。
+    if (id.length <= 12) id else "${id.take(4)}…${id.takeLast(4)}"
 
 /** 顶部渐变区：标题 + 概览 + 刷新/设置 */
 @Composable
@@ -848,8 +881,27 @@ private fun HeroHeader(
                     Text(
                         homeStatusLine(monitoring, total, liveCount, pausedCount, skip),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = cs.onPrimaryContainer.copy(alpha = 0.72f)
+                        color = cs.onPrimaryContainer.copy(alpha = 0.72f),
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
+                    // 暂停数降级成小徽标：主行不再折行被右侧图标压住
+                    homePausedBadge(pausedCount, total)?.let { badge ->
+                        Spacer(Modifier.width(Dimens.SpaceXS))
+                        Surface(
+                            shape = Dimens.ShapePill,
+                            color = cs.outline.copy(alpha = 0.14f)
+                        ) {
+                            Text(
+                                badge,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = cs.onPrimaryContainer.copy(alpha = 0.82f),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                maxLines = 1
+                            )
+                        }
+                    }
                 }
             }
             IconButton(onClick = onRefresh, enabled = !refreshing) {
@@ -868,7 +920,8 @@ private fun HeroHeader(
                 }
             }
             // 历史入口图标化：H 代表 History，比文字更紧凑，统一放标题栏
-            IconButton(onClick = onOpenHistory) {
+            // 字母对 TalkBack 没意义，补语义标签
+            IconButton(onClick = onOpenHistory, modifier = Modifier.semantics { contentDescription = "查看开播历史" }) {
                 Text(
                     "H",
                     style = MaterialTheme.typography.titleMedium,
@@ -912,20 +965,19 @@ private fun MonitorBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
+                // 压成一行：标题「后台检测已开启」和顶部状态行语义重复，白占一整行高度。
+                // 间隔仍显示含网络倍数/免打扰后的真实值，避免界面说 2 分钟、实际 6 分钟。
                 Text(
-                    if (enabled) "后台检测已开启" else "后台检测已关闭",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    // 显示含网络倍数/免打扰后的真实间隔，避免界面说 2 分钟、实际 6 分钟
                     buildString {
-                        append("实际每 ${formatInterval(effectiveSec)}")
+                        append(if (enabled) "后台检测中" else "后台检测已关闭")
+                        append(" · 每 ${formatInterval(effectiveSec)}")
                         if (effectiveSec > intervalSec) append("（基础 ${intervalSec}s）")
                         append(" · 上次 ${Format.relative(lastCheck)}")
                     },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.outline
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 if (enabled && failedCount > 0) {
                     Spacer(Modifier.height(Dimens.SpaceXS))
@@ -1005,7 +1057,7 @@ private fun EmptyState() {
         Text("还没有关注的主播", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(6.dp))
         Text(
-            "点右下角「添加关注」，粘贴 B站 / 抖音 / 斗鱼 / 虎牙\n的直播间链接或房间号就行",
+            "点「＋」添加关注，粘贴 B站 / 抖音 / 斗鱼 / 虎牙\n的直播间链接或房间号就行",
             style = MaterialTheme.typography.bodySmall,
             color = cs.outline,
             textAlign = TextAlign.Center,
@@ -1072,7 +1124,8 @@ internal fun StreamerCard(
                     buildString {
                         append(PlatformRegistry.get(s.platformId)?.displayName ?: s.platformId)
                         append(" · ")
-                        append(s.displayId)
+                        // 长号折叠成「前4…后4」，完整 ID 在操作面板里复制；搜索仍按完整号匹配
+                        append(briefDisplayId(s.displayId))
                         // 平台附注（B 站「轮播中」、斗鱼分区名）：不显示的话，
                         // 轮播直播间会被当成「未开播」，用户看不出为什么
                         if (s.note.isNotBlank()) {
@@ -1126,33 +1179,40 @@ private fun TimeLine(s: StreamerEntity, now: Long) {
             s.missing -> Text(
                 "⚠ ${s.lastError ?: "主播或直播间不存在"}",
                 style = MaterialTheme.typography.labelSmall,
-                color = StatusColors.warning()
+                color = StatusColors.warning(),
+                // 接口报错文案长度不可控，不限行会把整张卡片撑高
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
 
             s.errorCount >= 3 -> Text(
                 "⚠ ${s.lastError ?: "检测异常"}（连续 ${s.errorCount} 次）",
                 style = MaterialTheme.typography.labelSmall,
-                color = StatusColors.warning()
+                color = StatusColors.warning(),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
 
             s.isLive -> {
                 val playedMs = if (s.liveStartAt > 0) now - s.liveStartAt * 1000L else 0L
                 val showSpan = playedMs in 0..(20L * 3_600_000L)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (showSpan) "已播 " + Format.span(playedMs) else "直播中",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StatusColors.live(),
-                        fontWeight = FontWeight.Medium
-                    )
-                    if (s.liveStartAt > 0) {
-                        Text(
-                            "  ·  ${Format.clock(s.liveStartAt * 1000L)} 开播",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = cs.outline
-                        )
-                    }
-                }
+                // 合成一行：开播时刻 + 已播时长，去掉「已播 X · Y 开播」的重复叙述
+                Text(
+                    buildString {
+                        if (showSpan) append("已播 ${Format.span(playedMs)}")
+                        else append("直播中")
+                        // 真实开播时刻仍保留；系统校时/接口脏数据可能给出未来时刻，
+                        // 那时「已播」被 showSpan 隐藏，再说「X 开播」就是自相矛盾
+                        if (s.liveStartAt > 0L && s.liveStartAt * 1000L <= now) {
+                            append("（${Format.clock(s.liveStartAt * 1000L)} 开播）")
+                        }
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = StatusColors.live(),
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
             s.lastLiveStartAt > 0 -> {
@@ -1298,7 +1358,8 @@ private fun GroupHeader(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(cs.secondaryContainer.copy(alpha = 0.45f))
+            // 分组头降饱和：原先 0.45 的实色块比直播卡片还抢眼，压到 0.22 只留结构提示
+            .background(cs.secondaryContainer.copy(alpha = 0.22f))
             .combinedClickable(onClick = onToggle)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1340,12 +1401,13 @@ private fun MoveGroupDialog(
         onDismissRequest = onDismiss,
         title = { Text("移动「${streamer.nickname}」到分组") },
         text = {
-            Column {
+            // 分组多时限定高度可滚动，别把「新建分组」输入框挤出屏幕
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
                 // 未分组 + 已有组
                 listOf("" to GROUP_DEFAULT).plus(groups.map { it to groupLabel(it) }).forEach { (key, label) ->
                     TextButton(
                         onClick = { onPick(key) },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.MinTouch)
                     ) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Text(
@@ -1366,7 +1428,7 @@ private fun MoveGroupDialog(
                 )
                 TextButton(
                     onClick = { if (newName.isNotBlank()) onCreate(newName) },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.MinTouch)
                 ) { Text("新建并移入", modifier = Modifier.fillMaxWidth()) }
             }
         },
@@ -1788,12 +1850,14 @@ private fun EasterEggDialog(e: EasterEggs.Egg, onDismiss: () -> Unit) {
 private fun UpdateDialog(
     state: MainViewModel.UpdateState.Available,
     onDownload: () -> Unit,
+    onCancelDownload: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
     val info = state.info
     AlertDialog(
-        // 下载中不允许关掉，避免协程被取消后留下半截文件
+        // 下载中禁止点外部关闭，但保留「取消下载」按钮——此前零按钮、返回键也无效，
+        // 下载卡住时用户完全没法退出。取消走 VM 的 cancelDownload()，会清半截 .part。
         onDismissRequest = { if (!state.downloading) onDismiss() },
         title = { Text(if (state.downloading) "正在更新" else "发现新版本") },
         text = {
@@ -1829,7 +1893,11 @@ private fun UpdateDialog(
             }
         },
         confirmButton = {
-            if (!state.downloading) TextButton(onClick = onDownload) { Text("立即更新") }
+            if (state.downloading) {
+                TextButton(onClick = onCancelDownload) { Text("取消下载") }
+            } else {
+                TextButton(onClick = onDownload) { Text("立即更新") }
+            }
         },
         dismissButton = {
             if (!state.downloading) TextButton(onClick = onDismiss) { Text("以后再说") }

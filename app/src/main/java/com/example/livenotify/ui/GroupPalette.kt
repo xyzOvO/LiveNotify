@@ -29,3 +29,19 @@ internal fun groupColorArgb(name: String): Long = GROUP_COLORS[groupColorIndex(n
 
 /** 未分组用中性色，不与自定义组抢眼 */
 internal val UNGROUPED_COLOR = 0xFF8B90A0L
+
+/**
+ * 固定 ARGB 分组色作首字时，浅色下太淡（琥珀 2.7:1）、深色下太暗（靛蓝 3.2:1），
+ * 都低于 WCAG 4.5:1。按当前主题双向校正：浅色加深到 58%、深色朝白色提亮 42%，
+ * 两版对各自卡片底都 ≥5:1。不改数据库里的颜色值，只改显示。
+ */
+internal fun readableGroupColor(argb: Long, isDark: Boolean): Long {
+    // Long 的 shr/and 必须配 Long 掩码，取出来再转 Int
+    val r = ((argb shr 16) and 0xFFL).toInt()
+    val g = ((argb shr 8) and 0xFFL).toInt()
+    val b = (argb and 0xFFL).toInt()
+    fun adjust(c: Int) = if (isDark) c + ((255 - c) * 0.42).toInt() else (c * 0.58).toInt()
+    // Int 里拼好再转 Long，避免 Long shl 的位移量类型歧义
+    val packed = (0xFF shl 24) or (adjust(r) shl 16) or (adjust(g) shl 8) or adjust(b)
+    return packed.toLong() and 0xFFFFFFFFL
+}

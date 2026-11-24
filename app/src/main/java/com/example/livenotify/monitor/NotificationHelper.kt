@@ -16,6 +16,7 @@ import com.example.livenotify.R
 import com.example.livenotify.data.StreamerEntity
 import com.example.livenotify.platform.PlatformRegistry
 import com.example.livenotify.platform.Snapshot
+import com.example.livenotify.platform.isPlaceholderNickname
 
 object NotificationHelper {
 
@@ -191,14 +192,17 @@ object NotificationHelper {
         val platformName = PlatformRegistry.get(streamer.platformId)?.displayName ?: streamer.platformId
         val title = snapshot.title.ifBlank { "开播啦" }
         val late = PendingNotify.lateHint(lateByMs)
-        // 补发时主播已经播了一会儿，说「开播了」会误导
-        val headline = if (late != null) "${streamer.nickname} 正在直播" else "${streamer.nickname} 开播了"
+        // 本轮真名优先；库里若残留过假名也不要拿它当名字用
+        val displayName = pickDisplayName(snapshot.nickname, streamer.nickname)
+        // 补发时主播已经播了一会儿，说「开播了」会误导；短于 3 分钟虽没有时长提示，
+        // 但仍是补发，标题必须说「正在直播」
+        val headline = liveHeadline(displayName, lateByMs)
         val bigText = buildString {
             append(platformName)
             append(" · ")
             append(title)
             if (late != null) append('\n').append(late)
-            append("\n点击前往直播间")
+            append('\n').append(openUrlHint(snapshot.roomUrl))
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_LIVE)
@@ -238,6 +242,27 @@ object NotificationHelper {
             false
         }
     }
+
+    /**
+     * 通知里用的主播名：本轮接口的真名优先，其次用库里保留的真名。
+     * 兜底假名（「B站主播 12345」这类）一律不当真名——两边都是假名时才会退回兜底，
+     * 那是「从未拿到过真名且接口还在缺字段」的最后手段。
+     */
+    internal fun pickDisplayName(snapshotName: String, storedName: String): String =
+        listOf(snapshotName, storedName)
+            .firstOrNull { it.isNotBlank() && !isPlaceholderNickname(it) }
+            ?: snapshotName.ifBlank { storedName }
+
+    /**
+     * 补发提示语（lateHint）不足 3 分钟时返回 null，但补发状态本身仍在——
+     * 此时标题不能说「开播了」，否则和「正在补发一条旧提醒」自相矛盾。
+     */
+    internal fun liveHeadline(displayName: String, lateByMs: Long): String =
+        if (lateByMs > 0L) "$displayName 正在直播" else "$displayName 开播了"
+
+    /** room_id 缺失时 B 站兜底跳个人空间，正文不能承诺「前往直播间」 */
+    internal fun openUrlHint(roomUrl: String): String =
+        if (roomUrl.contains("space.bilibili.com")) "点击前往主播主页" else "点击前往直播间"
 
     /**
      * 常驻通知的标题 / 正文 / 渠道，抽成纯函数，供 MonitorService 与单测共用。

@@ -38,6 +38,16 @@ object DouyinPlatform : LivePlatform {
 
     private val limiter = RateLimiter(minRequestGapMs)
 
+    /**
+     * 直播间链接必须用短号：live.douyin.com/<19 位 web_rid> 只返回 200 App 壳页、不跳房间；
+     * 只有 live.douyin.com/<短号> 才 302 到真实直播间。web_rid 会变，短号稳定。
+     * 短号缺失时退回 web_rid（至少与旧行为一致），不拼空链接。
+     */
+    internal fun roomUrlFor(shortId: String, webRid: String): String {
+        val id = shortId.ifBlank { webRid }
+        return "https://live.douyin.com/$id"
+    }
+
     /** web_rid 是雪花 ID，长度约 19；短于 15 的通常是抖音号（shortId），需要转换 */
     private const val WEB_RID_MIN_LEN = 15
 
@@ -138,6 +148,20 @@ object DouyinPlatform : LivePlatform {
             return if (msg.contains("风控")) Outcome.Failed(rid, msg, true)
             else Outcome.Failed(rid, msg, false)
         }
+
+        // 抖音会给旧 web_rid 返回滞后的 status=4 快照，明明在播却判成未开播。
+        // 短号稳定不变，用它做一次 302 拿当前 web_rid 复查；拿到不同 rid 且确实在播才改判，
+        // 否则保持原样——「宁可漏报也不误报」，不因为复查失败就猜状态。
+        if (parsed.status == STATUS_OFF && parsed.ownerShortId.isNotBlank()) {
+            val freshRid = toWebRid(parsed.ownerShortId)
+            if (freshRid != null && freshRid != rid) {
+                val fresh = loadReflow(freshRid, ck)
+                if (fresh != null && !fresh.notFound && fresh.status == STATUS_LIVE) {
+                    parsed = fresh
+                }
+            }
+        }
+
         return when {
             parsed.notFound -> Outcome.Missing(rid, "直播间不存在或已注销")
             parsed.status != STATUS_LIVE && parsed.status != STATUS_OFF ->
@@ -151,7 +175,7 @@ object DouyinPlatform : LivePlatform {
                     title = parsed.title,
                     state = if (parsed.status == STATUS_LIVE) LiveState.LIVE else LiveState.OFF,
                     liveStartAt = parsed.createTime,
-                    roomUrl = "https://live.douyin.com/${parsed.webRid}",
+                    roomUrl = roomUrlFor(parsed.ownerShortId, parsed.webRid),
                     displayId = parsed.webRid.ifBlank { rid }
                 )
             )

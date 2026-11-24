@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -32,6 +35,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -73,6 +80,9 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
     var deleteFor by remember { mutableStateOf<String?>(null) }
     var moveFor by remember { mutableStateOf<StreamerEntity?>(null) }
     var actionFor by remember { mutableStateOf<StreamerEntity?>(null) }
+    // 移除关注给一次后悔机会（与首页一致），确认后由 Snackbar 提供撤销
+    var removeFor by remember { mutableStateOf<StreamerEntity?>(null) }
+    val snackbar = remember { SnackbarHostState() }
 
     // 各分组统计
     val allCount = list.size
@@ -85,6 +95,8 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
     BackHandler(enabled = selected != null) { selected = null }
 
     Scaffold(
+        // 同首页：不避让导航栏的话「撤销」会被手势条压住
+        snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) },
         topBar = {
             TopAppBar(
                 title = { Text(if (selected == null) "分组管理" else groupLabel(selected ?: "")) },
@@ -118,7 +130,7 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
                     GroupRow(
                         label = GROUP_DEFAULT, count = ungrouped.size,
                         live = ungrouped.count { it.enabled && it.isLive },
-                        color = Color(UNGROUPED_COLOR),
+                        color = Color(readableGroupColor(UNGROUPED_COLOR, EffectiveDark.isDark)),
                         onClick = { selected = "" }, canManage = false
                     )
                 }
@@ -128,7 +140,7 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
                         label = name,
                         count = members.size,
                         live = members.count { it.enabled && it.isLive },
-                        color = Color(groupColorArgb(name)),
+                        color = Color(readableGroupColor(groupColorArgb(name), EffectiveDark.isDark)),
                         onClick = { selected = name },
                         canManage = true,
                         onRename = { renameFor = name },
@@ -234,8 +246,33 @@ fun GroupManageScreen(vm: MainViewModel, onBack: () -> Unit) {
             s = s,
             onMove = { moveFor = s; actionFor = null },
             onToggle = { scope.launch { vm.setStreamerEnabled(s, !s.enabled) }; actionFor = null },
-            onRemove = { vm.remove(s); actionFor = null },
+            onRemove = { removeFor = s; actionFor = null },
             onDismiss = { actionFor = null }
+        )
+    }
+    removeFor?.let { s ->
+        AlertDialog(
+            onDismissRequest = { removeFor = null },
+            title = { Text("移除关注") },
+            text = { Text("将「${s.nickname}」从关注列表移除，历史记录会保留，删错了还能在提示里撤销。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.remove(s)
+                        removeFor = null
+                        // 与首页同一套：误删成本不低（要重新解析添加），给一次后悔机会
+                        scope.launch {
+                            val r = snackbar.showSnackbar(
+                                message = "已移除「${s.nickname}」",
+                                actionLabel = "撤销",
+                                duration = SnackbarDuration.Short
+                            )
+                            if (r == SnackbarResult.ActionPerformed) vm.restore(s)
+                        }
+                    }
+                ) { Text("移除") }
+            },
+            dismissButton = { TextButton(onClick = { removeFor = null }) { Text("取消") } }
         )
     }
 }
@@ -286,8 +323,14 @@ private fun GroupRow(
                 )
             }
             if (canManage) {
-                TextButton(onClick = { onRename?.invoke() }) { Text("改名") }
-                TextButton(onClick = { onDelete?.invoke() }) { Text("删除") }
+                TextButton(
+                    onClick = { onRename?.invoke() },
+                    modifier = Modifier.heightIn(min = Dimens.MinTouch)
+                ) { Text("改名") }
+                TextButton(
+                    onClick = { onDelete?.invoke() },
+                    modifier = Modifier.heightIn(min = Dimens.MinTouch)
+                ) { Text("删除") }
             }
         }
     }
@@ -330,9 +373,13 @@ private fun MoveGroupSheet(
         onDismissRequest = onDismiss,
         title = { Text("移动「${streamer.nickname}」到") },
         text = {
-            Column(Modifier.horizontalScroll(rememberScrollState())) {
+            // 原来是 horizontalScroll，但条目纵向排列——分组一多底部「新建」就被挤没了
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
                 listOf("" to GROUP_DEFAULT).plus(groups.map { it to it }).forEach { (key, label) ->
-                    TextButton(onClick = { onPick(key) }) {
+                    TextButton(
+                        onClick = { onPick(key) },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.MinTouch)
+                    ) {
                         Text(if (key == streamer.group) "$label ✓" else label, modifier = Modifier.fillMaxWidth())
                     }
                 }
@@ -341,7 +388,10 @@ private fun MoveGroupSheet(
                     label = { Text("或新建分组") }, singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                TextButton(onClick = { if (newName.isNotBlank()) onCreate(newName) }) {
+                TextButton(
+                    onClick = { if (newName.isNotBlank()) onCreate(newName) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = Dimens.MinTouch)
+                ) {
                     Text("新建并移入", modifier = Modifier.fillMaxWidth())
                 }
             }
