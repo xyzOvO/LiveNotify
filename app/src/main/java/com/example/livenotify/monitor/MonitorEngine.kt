@@ -258,7 +258,22 @@ class MonitorEngine(
                             } else {
                                 0L
                             }
-                            if (NotificationHelper.notifyLive(context, updated, snap, lateByMs)) {
+                            // 场次种子：平台没给开播时刻时不能退化成 0，否则同一主播第二场
+                            // 会复用旧 id、只更新文字不响铃（issue #3）。重试沿用首次失败时刻。
+                            val notifySeed = NotificationPolicy.notifySeed(
+                                sessionKey = sessionKey,
+                                retrySince = if (wantsRetry) s.pendingNotifySince else 0L,
+                                now = now
+                            )
+                            if (NotificationHelper.notifyLive(
+                                    context,
+                                    updated,
+                                    snap,
+                                    lateByMs,
+                                    notifySeed,
+                                    previousSessionSeed = s.lastNotifiedLiveStart
+                                )
+                            ) {
                                 updated = updated.copy(
                                     lastNotifiedAt = now,
                                     lastNotifiedLiveStart = sessionKey

@@ -155,6 +155,12 @@ fun SettingsScreen(
     val plan = PollSchedule.plan(settings, network, quiet)
     val notifyAllowed = remember(resumeTick) { NotificationHelper.canNotify(context) }
     val batteryFree = remember(resumeTick) { AutoStartHelper.isIgnoringBatteryOptimizations(context) }
+    // 开关存的是「App 的设定」，真正决定响不响的是系统渠道。进页面（含从系统设置返回）时对账一次，
+    // 让开关显示系统的真实状态；再读一份给下面那行说明用。alertRev 覆盖「刚改完开关、渠道已重建」。
+    val alertRev by vm.alertRev.collectAsStateWithLifecycle()
+    val channelFlags = remember(resumeTick, alertRev) { NotificationHelper.readLiveChannelAlert(context) }
+    val channelAudio = remember(resumeTick, alertRev) { NotificationHelper.liveChannelAlert(context) }
+    LaunchedEffect(resumeTick) { vm.syncNotifyAlertFromSystem() }
     val total = streamers.count { it.enabled }
 
     // 有开播提醒因为通知被关掉没送达：明确告诉用户「还能不能补」，
@@ -239,10 +245,53 @@ fun SettingsScreen(
                         rightChecked = settings.notifyVibrate,
                         onRightChange = vm::setNotifyVibrate
                     )
+                    // 声音/震动实际由系统渠道决定，所以把系统的真实状态直接摆在开关下面：
+                    // 开关是「你的设定」，这行是「系统实际的」，两者不一致时不会再互相骗人
+                    val (alertLine, alertWarn) = when {
+                        channelFlags == null ->
+                            "系统里还没有「开播提醒」渠道，下次启动会创建" to false
+                        channelAudio == NotificationHelper.LiveChannelAlert.SILENT &&
+                            (channelFlags.sound || channelFlags.vibrate) ->
+                            "系统把「开播提醒」的重要性调低了，实际不会响" to true
+                        channelFlags.sound && channelFlags.vibrate -> "系统当前：铃声 + 震动" to false
+                        channelFlags.sound -> "系统当前：仅铃声" to false
+                        channelFlags.vibrate -> "系统当前：仅震动" to true
+                        else -> "系统当前：静音" to true
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 8.dp, top = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            alertLine,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (alertWarn) StatusColors.warning()
+                            else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.weight(1f)
+                        )
+                        // 渠道被系统锁定时 App 改不动，只有系统设置能改；入口就放在这行旁边，省得翻菜单
+                        TextButton(
+                            onClick = {
+                                NotificationHelper.openChannelSettings(context, NotificationHelper.CHANNEL_LIVE)
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("去修改", style = MaterialTheme.typography.bodySmall) }
+                    }
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                         OutlinedButton(onClick = {
-                            if (!NotificationHelper.testNotification(context)) {
-                                vm.notify("通知权限未开启，先在下面「后台权限」里允许通知")
+                            when {
+                                !NotificationHelper.testNotification(context) ->
+                                    vm.notify("未发出通知：确认已允许通知，且「开播提醒」里打开了声音/震动；常驻通知本身不响铃")
+                                // 「能弹出」不等于「有铃声」：渠道可能只震动或被调成静音
+                                NotificationHelper.liveChannelAlert(context) ==
+                                    NotificationHelper.LiveChannelAlert.VIBRATE_ONLY ->
+                                    vm.notify("通知已弹出，但「开播提醒」目前只有震动、没有铃声。可在下面打开声音，或到系统通知设置里给它选个铃声")
+                                NotificationHelper.liveChannelAlert(context) ==
+                                    NotificationHelper.LiveChannelAlert.SILENT ->
+                                    vm.notify("通知已弹出，但「开播提醒」是静音。请在下面打开声音/震动，或到系统通知设置里调高它的重要性")
                             }
                         }) { Text("发送测试通知") }
                         Spacer(Modifier.height(6.dp))

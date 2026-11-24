@@ -14,14 +14,24 @@ class LiveNotifyApp : Application() {
         super.onCreate()
         Graph.init(this)
         com.example.livenotify.ui.ThemePrefs.init(this)
+        // 建渠道之前先记「是否已存在」：这个次序决定后面是「按设置建」还是「读系统对账」
+        val liveChannelExisted = NotificationHelper.liveChannelExists(this)
         NotificationHelper.createChannels(this)
 
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 val s = Graph.settings.current()
-                // 参数没变时 applyAlertSettings 直接返回；只有用户改过响铃/震动才会重建渠道，
-                // 因此不会像以前那样每次冷启动都清掉已弹通知和用户的渠道设置
-                NotificationHelper.applyAlertSettings(this@LiveNotifyApp, s.notifySound, s.notifyVibrate)
+                if (liveChannelExisted) {
+                    // 渠道已存在：声音/震动归系统管，这里只读回来把开关对齐，绝不重建——
+                    // 重建会清掉用户自选的铃声。App 内开关从此显示的就是系统的真实状态。
+                    NotificationHelper.readLiveChannelAlert(this@LiveNotifyApp)?.let { actual ->
+                        if (actual.sound != s.notifySound) Graph.settings.setNotifySound(actual.sound)
+                        if (actual.vibrate != s.notifyVibrate) Graph.settings.setNotifyVibrate(actual.vibrate)
+                    }
+                } else {
+                    // 首次安装或渠道被系统清掉：按用户设置建一次（从备份恢复时也要尊重设置值）
+                    NotificationHelper.applyAlertSettings(this@LiveNotifyApp, s.notifySound, s.notifyVibrate)
+                }
                 if (s.monitorEnabled) {
                     MonitorService.start(this@LiveNotifyApp)
                 }

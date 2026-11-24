@@ -22,14 +22,14 @@ val keystoreProps = Properties().apply {
 val releaseKeyFile = keystoreProps.getProperty("storeFile")?.let { rootProject.file(it) }
 val hasReleaseKey = releaseKeyFile != null && releaseKeyFile.exists()
 
-// 版本号从最近的 git tag 自动读取：v1.1.1 → versionName "1.1.1"、versionCode 10101。
+// 版本号从最近的 git tag 自动读取：v1.1.2 → versionName "1.1.2"、versionCode 10102。
 // tag 即版本，发布时只需 git tag vX.Y.Z && git push --tags。
 //
 // 读不到 tag（下载源码 zip、构建副本没打 tag）时用下面的兜底值。
 // **它必须与最新一次发布的 tag 保持一致**：兜底值比用户已装版本低的话，
 // Android 会以 INSTALL_FAILED_VERSION_DOWNGRADE 拒绝覆盖安装（真机上踩过）。
-val FALLBACK_VERSION_NAME = "1.1.1"
-val FALLBACK_VERSION_CODE = 10101
+val FALLBACK_VERSION_NAME = "1.1.2"
+val FALLBACK_VERSION_CODE = 10102
 
 val tagVersion: Pair<String, Int> = run {
     val tag = try {

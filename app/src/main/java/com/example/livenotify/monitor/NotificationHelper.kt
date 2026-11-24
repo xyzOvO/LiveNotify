@@ -31,10 +31,8 @@ object NotificationHelper {
 
     private const val TAG = "NotificationHelper"
 
-    /** 记录最近一次应用到渠道上的响铃/震动参数，避免无变化时反复删建渠道 */
-    private const val PREFS_ALERT = "notif_alert"
-    private const val KEY_SOUND = "sound"
-    private const val KEY_VIBRATE = "vibrate"
+    /** 系统渠道里「开播提醒」实际的响铃/震动，用来和 App 内的开关对账 */
+    data class ChannelAlertFlags(val sound: Boolean, val vibrate: Boolean)
 
     fun createChannels(context: Context, sound: Boolean = true, vibrate: Boolean = true) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -77,24 +75,17 @@ object NotificationHelper {
     }
 
     /**
-     * 修改开播提醒的响铃 / 震动。
-     * Android 8.0 起声音与震动由**渠道**决定，NotificationCompat.Builder 上的设置会被忽略，
-     * 所以只能删掉渠道再按新参数重建（代价：会重置用户在该渠道上的手动调整）。
+     * 按给定参数**重建**开播提醒渠道。
      *
-     * 因此只在「用户真的改了偏好」时才重建：把最近一次应用的参数记在本地，
-     * 参数没变就直接返回。否则每次冷启动都删建渠道，会把用户的渠道设置和已经弹出的通知清空。
+     * Android 8.0 起声音与震动由渠道决定，`NotificationCompat.Builder` 上的设置会被忽略，
+     * 所以想改声音只能删掉渠道再重建（代价：会重置用户在该渠道上的手动调整，
+     * 包括他自选的铃声——这是系统限制，无法避免）。
+     *
+     * 因此只在两种情况下调用：用户主动改了 App 内的响铃/震动开关；
+     * 或渠道压根不存在、需要按恢复的设置建一次。**冷启动不要调它**，
+     * 启动时只做「读系统实际状态回写设置」的对账（见 [readLiveChannelAlert]）。
      */
     fun applyAlertSettings(context: Context, sound: Boolean, vibrate: Boolean) {
-        val prefs = context.getSharedPreferences(PREFS_ALERT, Context.MODE_PRIVATE)
-        val known = prefs.contains(KEY_SOUND) && prefs.contains(KEY_VIBRATE)
-        if (known &&
-            prefs.getBoolean(KEY_SOUND, true) == sound &&
-            prefs.getBoolean(KEY_VIBRATE, true) == vibrate
-        ) {
-            Log.d(TAG, "live channel unchanged (sound=$sound, vibrate=$vibrate), skip rebuild")
-            return
-        }
-
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.deleteNotificationChannel(CHANNEL_LIVE)
         nm.createNotificationChannel(
@@ -107,8 +98,26 @@ object NotificationHelper {
                 applyAlert(this, sound, vibrate)
             }
         )
-        prefs.edit().putBoolean(KEY_SOUND, sound).putBoolean(KEY_VIBRATE, vibrate).apply()
         Log.i(TAG, "rebuild live channel: sound=$sound vibrate=$vibrate")
+    }
+
+    /** 开播提醒渠道是否已存在（用来区分「首次创建」和「已有渠道需对账」） */
+    fun liveChannelExists(context: Context): Boolean =
+        (context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+            ?.getNotificationChannel(CHANNEL_LIVE) != null
+
+    /**
+     * 读系统渠道里开播提醒的实际响铃/震动，供启动时与 App 内开关对账。
+     *
+     * 存在的意义：声音归系统管，用户可能在系统设置里改过、或渠道被系统重置。
+     * App 若只记「我上次写了什么」，开关就会显示一个与系统不符的值（issue #3 的现场）。
+     * 这里只读不写，调用方拿它回写设置即可——绝不主动重建渠道，免得清掉用户自选的铃声。
+     */
+    fun readLiveChannelAlert(context: Context): ChannelAlertFlags? {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return null
+        val ch = nm.getNotificationChannel(CHANNEL_LIVE) ?: return null
+        return ChannelAlertFlags(sound = ch.sound != null, vibrate = ch.shouldVibrate())
     }
 
     private fun applyAlert(ch: NotificationChannel, sound: Boolean, vibrate: Boolean) {
@@ -145,6 +154,29 @@ object NotificationHelper {
         return ch.importance != NotificationManager.IMPORTANCE_NONE
     }
 
+    /**
+     * 开播提醒渠道当前的声音状态。
+     *
+     * [canNotify] 只判断会不会弹出（渠道没被彻底关掉），但「能弹」≠「会响」：
+     * 用户可能把渠道调成低优先级，或在 App 里关掉声音（渠道会被重建，sound=null）。
+     * 这两种情况 notify() 仍然成功，用户却听不到铃声——issue #3 的另一种成因。
+     * 测试通知用它给出可执行的提示，不改通知逻辑。
+     */
+    enum class LiveChannelAlert { SOUND, VIBRATE_ONLY, SILENT }
+
+    fun liveChannelAlert(context: Context): LiveChannelAlert {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return LiveChannelAlert.SOUND
+        val ch = nm.getNotificationChannel(CHANNEL_LIVE) ?: return LiveChannelAlert.SOUND
+        // IMPORTANCE_LOW 及以下系统不会出声，只有 DEFAULT/HIGH 才会响
+        if (ch.importance < NotificationManager.IMPORTANCE_DEFAULT) return LiveChannelAlert.SILENT
+        return when {
+            ch.sound != null -> LiveChannelAlert.SOUND
+            ch.shouldVibrate() -> LiveChannelAlert.VIBRATE_ONLY
+            else -> LiveChannelAlert.SILENT
+        }
+    }
+
     /** 跳转到系统通知设置（应用级），供权限缺失提示条使用 */
     fun openNotificationSettings(context: Context) {
         val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
@@ -174,7 +206,9 @@ object NotificationHelper {
         context: Context,
         streamer: StreamerEntity,
         snapshot: Snapshot,
-        lateByMs: Long = 0L
+        lateByMs: Long = 0L,
+        sessionSeed: Long = snapshot.liveStartAt,
+        previousSessionSeed: Long = 0L
     ): Boolean {
         if (!canNotify(context)) return false
 
@@ -182,9 +216,18 @@ object NotificationHelper {
             addCategory(Intent.CATEGORY_BROWSABLE)
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
+        val notificationId = NotificationPolicy.liveNotificationId(streamer.id, sessionSeed)
+        // 换场后旧通知不会自己消失：同一主播会堆两条「开播」。这里先把上一场撤掉。
+        // 只有拿得到上一场种子时才撤（平台不给开播时刻的老场次种子是 0，无从计算）。
+        if (previousSessionSeed > 0L && previousSessionSeed != sessionSeed) {
+            runCatching {
+                NotificationManagerCompat.from(context)
+                    .cancel(NotificationPolicy.liveNotificationId(streamer.id, previousSessionSeed))
+            }
+        }
         val pi = PendingIntent.getActivity(
             context,
-            streamer.id.toInt(),
+            notificationId,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -216,9 +259,10 @@ object NotificationHelper {
             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
             .build()
 
-        // 同一主播使用固定 id，避免重复堆叠；权限在检查后仍可能变化，不能把失败记成已通知。
+        // 同一场次的补发复用 id（避免重复堆叠），不同场次换 id（保证重新响铃）。
+        // 不能再用 1000 + streamer.id：同主播第二场会被当成更新，只改文字不响。
         return try {
-            NotificationManagerCompat.from(context).notify(1000 + streamer.id.toInt(), notification)
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
             true
         } catch (_: SecurityException) {
             false
@@ -236,7 +280,8 @@ object NotificationHelper {
             .setAutoCancel(true)
             .build()
         return try {
-            NotificationManagerCompat.from(context).notify(Int.MAX_VALUE, notification)
+            NotificationManagerCompat.from(context)
+                .notify(NotificationPolicy.testNotificationId(System.currentTimeMillis()), notification)
             true
         } catch (_: SecurityException) {
             false

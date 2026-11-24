@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -86,6 +87,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _toast = MutableStateFlow<String?>(null)
     val toast: StateFlow<String?> = _toast
+
+    /** 渠道被重建后自增，让设置页重新读系统的真实声音状态（否则那行说明会停在旧值） */
+    private val _alertRev = MutableStateFlow(0)
+    val alertRev: StateFlow<Int> = _alertRev
 
     /** 下拉刷新 / 立即检测的进行中状态 */
     private val _refreshing = MutableStateFlow(false)
@@ -855,15 +860,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _toast.value = if (c.isBlank()) "已清空 Cookie" else "Cookie 已保存到本机"
     }
 
-    /** 开播提醒响铃。Android 8+ 由渠道决定，改完必须重建渠道才生效 */
+    /**
+     * 开播提醒响铃。Android 8+ 由渠道决定，改完必须重建渠道才生效。
+     *
+     * 但**重建不一定成功**：用户在系统设置里手动锁定过该渠道的声音/震动后，
+     * 系统会拒绝 App 的修改（实测 MIUI 上删掉重建后 mSound 仍是 null，
+     * mUserLockedFields 原样保留）。这时不能假装成功——回读一次，
+     * 以系统实际值落库，并明确告诉用户只能去系统设置改。
+     */
     fun setNotifySound(v: Boolean) = viewModelScope.launch {
-        Graph.settings.setNotifySound(v)
-        NotificationHelper.applyAlertSettings(getApplication(), v, Graph.settings.current().notifyVibrate)
+        val cur = Graph.settings.current()
+        NotificationHelper.applyAlertSettings(getApplication(), v, cur.notifyVibrate)
+        val actual = NotificationHelper.readLiveChannelAlert(getApplication())
+        if (actual == null) {
+            Graph.settings.setNotifySound(v)
+            _alertRev.update { it + 1 }
+            return@launch
+        }
+        Graph.settings.setNotifySound(actual.sound)
+        Graph.settings.setNotifyVibrate(actual.vibrate)
+        _alertRev.update { it + 1 }
+        if (actual.sound != v) {
+            _toast.value = "系统已锁定「开播提醒」的铃声，App 改不动；请在系统通知设置里调整"
+        }
     }
 
     fun setNotifyVibrate(v: Boolean) = viewModelScope.launch {
-        Graph.settings.setNotifyVibrate(v)
-        NotificationHelper.applyAlertSettings(getApplication(), Graph.settings.current().notifySound, v)
+        val cur = Graph.settings.current()
+        NotificationHelper.applyAlertSettings(getApplication(), cur.notifySound, v)
+        val actual = NotificationHelper.readLiveChannelAlert(getApplication())
+        if (actual == null) {
+            Graph.settings.setNotifyVibrate(v)
+            _alertRev.update { it + 1 }
+            return@launch
+        }
+        Graph.settings.setNotifySound(actual.sound)
+        Graph.settings.setNotifyVibrate(actual.vibrate)
+        _alertRev.update { it + 1 }
+        if (actual.vibrate != v) {
+            _toast.value = "系统已锁定「开播提醒」的震动，App 改不动；请在系统通知设置里调整"
+        }
+    }
+
+    /**
+     * 与系统渠道对账：声音/震动归系统管，用户可能在系统设置里改过。
+     * 只把系统的实际状态写回开关，**不重建渠道**（重建会清掉他自选的铃声）。
+     * 进设置页和冷启动各跑一次，开关显示的就永远是系统的真实状态。
+     */
+    fun syncNotifyAlertFromSystem() = viewModelScope.launch {
+        val actual = NotificationHelper.readLiveChannelAlert(getApplication()) ?: return@launch
+        val s = Graph.settings.current()
+        if (actual.sound != s.notifySound) Graph.settings.setNotifySound(actual.sound)
+        if (actual.vibrate != s.notifyVibrate) Graph.settings.setNotifyVibrate(actual.vibrate)
     }
 
     /** 隐藏常驻通知：服务仍在跑，只是通知降到最低可见度 */
