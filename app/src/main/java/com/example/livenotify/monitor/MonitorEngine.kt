@@ -78,6 +78,10 @@ class MonitorEngine(
     var lastDurationMs: Long = 0L
         private set
 
+    /** 上次清理过期历史会话的时刻（本地单调时钟之外用 wall clock 即可，6h 粒度足够） */
+    @Volatile
+    private var lastHistoryCleanupAt: Long = 0L
+
     /** 后台轮询和手动刷新共用同一状态机，必须串行执行，避免重复通知和旧快照覆盖新结果。 */
     private val runMutex = Mutex()
 
@@ -97,6 +101,23 @@ class MonitorEngine(
         com.example.livenotify.platform.DouyinPlatform.cookie = cfg.douyinCookie
 
         val dao = db.streamerDao()
+        // 主动清理过期待补发：监控关很久、主播被停用/删除时，那条待办不会再经过
+        // 每轮的 PendingNotify.check() 懒判定，会一直挂在库里让诊断页显示旧值。
+        val swept = dao.clearExpiredPending(now - PendingNotify.MAX_AGE_MS, now)
+        if (swept > 0) Log.i(TAG, "cleared $swept expired pending notifications")
+
+        // 历史会话清理也挂到轮询上：长期不重启 App 时仍按 6h 节流清理 90 天前的记录。
+        if (HistoryCleanup.due(lastHistoryCleanupAt, now)) {
+            lastHistoryCleanupAt = now
+            try {
+                val removed = db.liveSessionDao().deleteOlderThan(now - HistoryCleanup.RETENTION_MS)
+                if (removed > 0) Log.i(TAG, "cleared $removed old live sessions")
+            } catch (t: Throwable) {
+                // 清理失败不能拖垮本轮检测，下一轮 6h 后再试
+                Log.w(TAG, "history cleanup failed", t)
+            }
+        }
+
         val all = dao.listEnabled()
         if (all.isEmpty()) {
             lastRunAt = now
@@ -183,10 +204,21 @@ class MonitorEngine(
 
                     is Outcome.Failed -> {
                         errors++
+                        // 平台层的 retryable 分类终于接上退避：接口变更/解析失败（不可重试）
+                        // 比网络抖动更快进入退避，避免明知不会自愈还每轮徒增请求。
+                        val step = FailureBackoff.failureStep(o.retryable)
+                        AppLogger.record(
+                            dao = db.appLogDao(),
+                            category = AppLogger.CAT_DETECT,
+                            severity = if (o.retryable) AppLogger.SEV_WARN else AppLogger.SEV_ERROR,
+                            message = o.reason,
+                            anchorId = s.anchorId,
+                            platformId = s.platformId
+                        )
                         updates.add(
                             s.copy(
                                 lastCheckedAt = now,
-                                errorCount = s.errorCount + 1,
+                                errorCount = s.errorCount + step,
                                 lastError = o.reason
                             )
                         )
@@ -239,8 +271,12 @@ class MonitorEngine(
                             liveStreak = transition.streak,
                             // 本场开播时刻只在直播中有值；未开播清零
                             liveStartAt = if (nowLive) sessionKey else 0L,
-                            // 「上次开播」永久保留：斗鱼接口在未开播时仍返回上一场 start_time
-                            lastLiveStartAt = if (sessionKey > 0L) sessionKey else s.lastLiveStartAt,
+                            // 「上次开播」永久保留，且只前进不后退：斗鱼未开播时仍返回上一场
+                            // start_time，抖音下播后 createTime 会退回更早一场（见 LiveStartStamp）
+                            lastLiveStartAt = keepLatestLiveStart(
+                                previous = s.lastLiveStartAt,
+                                observed = sessionKey
+                            ),
                             // 检测到 开播 → 未开播 跳变时，记下下播时刻（此刻）
                             lastLiveEndAt = if (!nowLive && s.isLive) now else s.lastLiveEndAt,
                             pendingNotifySession = 0L,
@@ -291,6 +327,14 @@ class MonitorEngine(
                                         if (wantsRetry) s.pendingNotifySince else now
                                 )
                                 notifySent = false
+                                AppLogger.record(
+                                    dao = db.appLogDao(),
+                                    category = AppLogger.CAT_NOTIFY,
+                                    severity = AppLogger.SEV_WARN,
+                                    message = "开播提醒未送达，已记入待补发",
+                                    anchorId = s.anchorId,
+                                    platformId = s.platformId
+                                )
                             }
                             // 通知结果必须立刻落库：晚一步进程被杀，下一轮就会重复提醒、
                             // 或者（失败时没记下来）从此漏掉这一场。
@@ -323,6 +367,12 @@ class MonitorEngine(
         }
 
         if (updates.isNotEmpty()) dao.updateAll(updates)
+        // 运行日志治理：每轮检测末尾按 7 天 TTL + 5000 条上限裁剪；失败不影响主流程。
+        try {
+            AppLogger.maintain(db.appLogDao(), now)
+        } catch (t: Throwable) {
+            Log.w(TAG, "app log maintain failed", t)
+        }
         lastRunAt = System.currentTimeMillis()
         lastDurationMs = (lastRunAt - now).coerceAtLeast(0L)
         return Report(
@@ -357,7 +407,13 @@ class MonitorEngine(
         // 下播 / 换场：先收口进行中的会话
         if (event == SessionEvent.CLOSE || event == SessionEvent.SWITCH) {
             sdao.openSession(before.platformId, before.anchorId)?.let { cur ->
-                sdao.close(cur.id, now, after.title)
+                // 标题必须用会话自己记录的那份：换场时 after.title 已是下一场的标题，
+                // 直接写会把上一场的历史标题覆盖掉（前一场标题消失）
+                sdao.close(
+                    cur.id,
+                    now,
+                    closingSessionTitle(cur.title, after.title, event)
+                )
             }
         }
 

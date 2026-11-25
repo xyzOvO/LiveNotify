@@ -83,6 +83,19 @@ class ResumeBaselineTest {
     }
 
     @Test
+    fun `恢复时平台回退旧场次 上次开播不倒退`() {
+        // 库里记的是最近一场 800，平台这次返回上一场 100（抖音下播后的常见表现）
+        val r = resumeBaseline(
+            paused().copy(lastLiveStartAt = 800L),
+            snap(live = false, key = 100L),
+            now = 9000L
+        )
+
+        assertFalse(r.isLive)
+        assertEquals(800L, r.lastLiveStartAt)
+    }
+
+    @Test
     fun `恢复时未开播 之后真开播仍能正常通知`() {
         val r = resumeBaseline(paused(), snap(live = false, key = 0L), now = 9000L)
 

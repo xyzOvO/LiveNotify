@@ -116,6 +116,7 @@ class MonitorService : Service() {
                     // 单轮超过一个周期就跳过错过的格点，绝不连续补跑
                     val nextAt = PollSchedule.nextTickAt(tickStart, period, now)
                     val wait = (nextAt - now).coerceIn(1_000L, PollSchedule.MAX_MS)
+                    nextTickAt.value = nextAt // 诊断页读它显示「下次检测」，不再只存在局部变量里
                     Log.d(
                         TAG,
                         "tick check=${report.checked} notified=${report.notified} err=${report.errors}" +
@@ -127,6 +128,7 @@ class MonitorService : Service() {
                     throw ce
                 } catch (t: Throwable) {
                     consecutiveFailures++
+                    nextTickAt.value = 0L // 进入异常退避，之前的调度时间点已作废
                     val wait = PollSchedule.errorBackoffMs(consecutiveFailures)
                     Log.w(TAG, "loop error #$consecutiveFailures, backoff ${wait}ms", t)
                     delay(wait) // 连续异常指数退避，成功一轮即重置
@@ -254,6 +256,14 @@ class MonitorService : Service() {
         private const val RESTART_REQUEST_CODE = 1001
         const val ACTION_STOP = "com.example.livenotify.ACTION_STOP_MONITOR"
         const val ACTION_REFRESH = "com.example.livenotify.ACTION_REFRESH_MONITOR"
+
+        /**
+         * 下一轮预计检测时刻（毫秒时间戳，0=尚未调度）。
+         *
+         * 调度发生在 startLoop 的协程里，原本 nextAt 是纯局部变量，诊断页完全看不到。
+         * 用 StateFlow 而不是普通字段：诊断页是 Composable，要跟着值变化重组。
+         */
+        val nextTickAt = MutableStateFlow(0L)
 
         /** 服务是否活着。只在它活着时才发刷新指令，避免把已关闭的检测重新拉起 */
         val isRunning: Boolean get() = running.value

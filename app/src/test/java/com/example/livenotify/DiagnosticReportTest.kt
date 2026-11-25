@@ -50,5 +50,20 @@ class DiagnosticReportTest {
         val report = buildDiagnosticReport(emptyList(), 0L, 0L, MonitorEngine.SkipReason.WIFI_ONLY, "移动网络")
         assertTrue(report.contains("等待 Wi-Fi"))
         assertTrue(report.contains("尚未检测"))
+        assertTrue(report.contains("后台服务：未在运行"))
+        assertTrue(report.contains("尚未调度"))
+    }
+
+    @Test
+    fun `报告含真实服务状态下次检测与待补发数`() {
+        val report = buildDiagnosticReport(
+            health = emptyList(), lastRunAt = 1000L, lastDurationMs = 200L,
+            skip = null, networkLabel = "Wi-Fi",
+            serviceRunning = true, nextTickAt = 7000L, pendingCount = 3
+        )
+        assertTrue(report.contains("后台服务：运行中"))
+        assertTrue(report.contains("下次检测："))
+        assertTrue(report.contains("待补发提醒：3 条"))
+        assertFalse("旧的无来源说法应移除", report.contains("暂无数据来源"))
     }
 }

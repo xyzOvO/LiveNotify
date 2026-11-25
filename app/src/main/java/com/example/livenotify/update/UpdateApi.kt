@@ -66,6 +66,14 @@ object UpdateApi {
             return null
         }
 
+        // 显式过滤 draft / prerelease：/releases/latest 按文档只给稳定版，
+        // 但镜像/代理异常缓存时可能混入内测包，这里再挡一道。
+        if (!StableRelease.isStable(
+                root.optBoolean("draft", false),
+                root.optBoolean("prerelease", false)
+            )
+        ) return null
+
         val tag = root.text("tag_name").trim()
         val m = Regex("""^v(\d+)\.(\d+)\.(\d+)$""").matchEntire(tag)
         if (m == null) return null

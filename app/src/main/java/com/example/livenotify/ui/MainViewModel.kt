@@ -48,15 +48,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         // 启动时清理 90 天前的历史会话，避免长期运行后无限增长
+        // （另有每轮检测也按 6h 节流清理，见 MonitorEngine 的 HistoryCleanup）
         viewModelScope.launch {
             runCatching {
-                sessionDao.deleteOlderThan(System.currentTimeMillis() - HISTORY_RETENTION_MS)
+                sessionDao.deleteOlderThan(System.currentTimeMillis() - com.example.livenotify.monitor.HistoryCleanup.RETENTION_MS)
             }
         }
-    }
-
-    companion object {
-        const val HISTORY_RETENTION_MS = 90L * 24 * 60 * 60 * 1000
     }
 
     // 分组展示用：按 group 排序。后台检测与常驻通知都只读 enabled，不受展示排序影响。
@@ -315,7 +312,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             pending.add(entity)
         }
 
-        // 写库放到最后一次性完成：中途崩溃或写入失败都不会留下「只导进一半」的列表。
+        // 设置和主播库是两个存储，没法塞进同一个 Room 事务。
+        // 顺序改为「先写设置（已合并成一次原子 DataStore edit），再写主播库」：
+        //   - 设置写失败 → 直接返回，一颗主播都没动；
+        //   - 主播库写失败 → 把设置恢复成导入前的快照，两边都回到「什么都没发生」。
+        // 这样无论哪边失败，用户看到的「已回滚」才是真的。
+        val beforePrefs = BackupFormat.snapshotOf(emptyList(), Graph.settings.current(), 0L).prefs
+        try {
+            data.prefs.applyTo(Graph.settings)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            return ImportReport(
+                added = 0,
+                skipped = skipped,
+                failed = failed + "恢复分组与白名单设置失败：${t.message ?: "未知错误"}（未新增任何主播）",
+                rolledBack = true
+            )
+        }
+
         // 取不到快照的主播在上一阶段已明确跳过并记录了原因，本来就不该进这次写入。
         if (pending.isNotEmpty()) {
             try {
@@ -333,7 +348,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                // 事务已整体回滚，一条都没写进去；设置也不再改动，保持「什么都没发生」
+                // 主播库整体回滚了，把设置也恢复回去，保持「什么都没发生」
+                try { beforePrefs.applyTo(Graph.settings) } catch (_: Throwable) {}
                 return ImportReport(
                     added = 0,
                     skipped = skipped,
@@ -342,14 +358,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
-        // 设置最后写：某些项（监控开关）会影响服务启停，别让中途状态反复横跳
-        try {
-            data.prefs.applyTo(Graph.settings)
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: Throwable) {
-            failed.add("设置恢复失败：${t.message ?: "未知错误"}")
-        }
+
         if (added > 0) {
             MonitorService.refreshIfRunning(getApplication())
             if (Graph.settings.current().monitorEnabled) MonitorService.start(getApplication())

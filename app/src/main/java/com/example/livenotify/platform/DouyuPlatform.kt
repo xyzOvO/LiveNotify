@@ -109,7 +109,8 @@ object DouyuPlatform : LivePlatform {
             ?: return Outcome.Failed(rid, "斗鱼接口缺少 data 字段", retryable = false)
 
         val status = data.optString("room_status", "")
-        if (status != "1" && status != "2") {
+        val liveState = StatusInterpret.douyuStatus(status)
+        if (liveState == null) {
             return Outcome.Failed(rid, "斗鱼返回未知的 room_status=$status", retryable = false)
         }
 
@@ -123,7 +124,7 @@ object DouyuPlatform : LivePlatform {
                 nickname = unescape(data.optString("owner_name", "")).ifBlank { "斗鱼主播 $roomId" },
                 avatarUrl = data.optString("avatar", "").takeIf { it.isNotBlank() },
                 title = unescape(data.optString("room_name", "")),
-                state = if (status == "1") LiveState.LIVE else LiveState.OFF,
+                state = liveState,
                 liveStartAt = liveStartSec,
                 roomUrl = "https://www.douyu.com/$roomId",
                 displayId = roomId,

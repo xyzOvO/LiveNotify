@@ -39,8 +39,28 @@ interface StreamerDao {
     @Query("UPDATE streamers SET `group` = :group WHERE id = :id")
     suspend fun setGroup(id: Long, group: String)
 
+    /**
+     * 主动清理过期的待补发提醒。
+     *
+     * 原来的判定是懒的：只有还查得到、还在播的主播才会在每轮 check() 里被判过期。
+     * 监控关很久、主播被停用/删除时那条待办会一直挂在库里，诊断页永远显示旧值。
+     * 这里按时间统一扫掉：超过 30 分钟或系统时间回拨（since > now）都清。
+     * @return 实际清理的条数
+     */
+    @Query(
+        """UPDATE streamers SET pendingNotifySession = 0, pendingNotifySince = 0
+           WHERE pendingNotifySince > 0 AND (pendingNotifySince < :cutoff OR pendingNotifySince > :now)"""
+    )
+    suspend fun clearExpiredPending(cutoff: Long, now: Long): Int
+
     @Query("SELECT * FROM streamers WHERE platformId = :platformId AND anchorId = :anchorId")
     suspend fun findByAnchor(platformId: String, anchorId: String): StreamerEntity?
+
+    /** 备份导入预览用：一次性取回所有已占用的 (平台, 主播) 键，避免逐条查库 */
+    @Query("SELECT platformId, anchorId FROM streamers")
+    suspend fun allAnchorKeys(): List<AnchorKey>
+
+    data class AnchorKey(val platformId: String, val anchorId: String)
 
     /** 失败返回 -1（唯一索引冲突），调用方据此提示「已添加过」 */
     @Insert(onConflict = OnConflictStrategy.IGNORE)

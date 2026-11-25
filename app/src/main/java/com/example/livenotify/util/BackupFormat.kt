@@ -28,6 +28,35 @@ object BackupFormat {
         val group: String = ""
     )
 
+    /**
+     * 导入预览：分别数出「会新增」和「已存在会跳过」的主播。
+     *
+     * 口径与真正的导入保持一致：未知平台/ID 为空在导入时也会失败，这里不计入新增；
+     * 已存在（按 platformId+anchorId 唯一键）会在导入时跳过。
+     * 纯函数，方便单测锁住口径，也让确认对话框在落库前就给出可信数字。
+     */
+    fun preview(
+        data: Data,
+        existingKeys: Set<Pair<String, String>>,
+        knownPlatformIds: Set<String>
+    ): Preview {
+        var add = 0
+        var skip = 0
+        var invalid = 0
+        for (e in data.entries) {
+            if (e.anchorId.isBlank() || e.platformId !in knownPlatformIds) {
+                invalid++
+            } else if ((e.platformId to e.anchorId) in existingKeys) {
+                skip++
+            } else {
+                add++
+            }
+        }
+        return Preview(add = add, skip = skip, invalid = invalid)
+    }
+
+    data class Preview(val add: Int, val skip: Int, val invalid: Int)
+
     data class Prefs(
         val pollIntervalSec: Int,
         val mobileFactor: Int,
@@ -46,17 +75,7 @@ object BackupFormat {
     ) {
         /** 逐项写回 DataStore；Cookie 不在其中，用户得在新设备上自己填 */
         suspend fun applyTo(repo: com.example.livenotify.data.SettingsRepository) {
-            repo.setPollInterval(pollIntervalSec)
-            repo.setMobileFactor(mobileFactor)
-            repo.setWifiOnly(wifiOnly)
-            repo.setQuiet(quietEnabled, quietStartMin, quietEndMin, quietNoNotify)
-            repo.setConfirmTimes(confirmTimes)
-            repo.setCooldownMin(cooldownMin)
-            repo.setMonitorEnabled(monitorEnabled)
-            repo.setNotifySound(notifySound)
-            repo.setNotifyVibrate(notifyVibrate)
-            repo.setHideMonitorNotification(hideMonitorNotification)
-            repo.setAutoUpdateCheck(autoUpdateCheck)
+            repo.applyBackupPrefs(this)
         }
     }
 

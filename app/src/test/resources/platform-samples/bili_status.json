@@ -1,0 +1,36 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "1001": {
+      "uid": 1001,
+      "uname": "B站主播 1001",
+      "face": "",
+      "live_status": 1,
+      "title": "测试标题",
+      "live_time": 1793240000,
+      "room_id": 2001,
+      "short_id": 0
+    },
+    "1002": {
+      "uid": 1002,
+      "uname": "B站主播 1002",
+      "face": "",
+      "live_status": 0,
+      "title": "",
+      "live_time": 0,
+      "room_id": 2002,
+      "short_id": 0
+    },
+    "1003": {
+      "uid": 1003,
+      "uname": "B站主播 1003",
+      "face": "",
+      "live_status": 2,
+      "title": "测试轮播标题",
+      "live_time": 0,
+      "room_id": 2003,
+      "short_id": 0
+    }
+  }
+}

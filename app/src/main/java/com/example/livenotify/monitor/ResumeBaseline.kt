@@ -35,7 +35,11 @@ internal fun resumeBaseline(
         isLive = nowLive,
         liveStreak = if (nowLive) 1 else 0,
         liveStartAt = if (nowLive) sessionKey else 0L,
-        lastLiveStartAt = if (sessionKey > 0L) sessionKey else s.lastLiveStartAt,
+        // 同 MonitorEngine：恢复关注时也不能把「上次开播」倒退回更早的场次
+        lastLiveStartAt = keepLatestLiveStart(
+            previous = s.lastLiveStartAt,
+            observed = sessionKey
+        ),
         lastNotifiedLiveStart = sessionKey,
         lastNotifiedAt = now,
         // 恢复关注 / 导入时不该把暂停期间攒下的待办补报一遍

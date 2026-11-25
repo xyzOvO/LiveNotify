@@ -41,12 +41,19 @@ internal fun buildDiagnosticReport(
     lastRunAt: Long,
     lastDurationMs: Long,
     skip: MonitorEngine.SkipReason?,
-    networkLabel: String
+    networkLabel: String,
+    serviceRunning: Boolean = false,
+    nextTickAt: Long = 0L,
+    pendingCount: Int = 0,
+    recentProblems: List<String> = emptyList()
 ): String = buildString {
     append("LiveNotify 诊断报告\n")
     append("生成时间：").append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())).append('\n')
+    append("后台服务：").append(if (serviceRunning) "运行中" else "未在运行").append('\n')
     append("最近检测：").append(if (lastRunAt > 0) formatClock(lastRunAt) else "尚未检测").append('\n')
+    append("下次检测：").append(if (nextTickAt > 0) formatClock(nextTickAt) else "尚未调度").append('\n')
     append("上轮耗时：").append(if (lastDurationMs > 0) "$lastDurationMs ms" else "—").append('\n')
+    append("待补发提醒：").append(pendingCount).append(" 条\n")
     append("网络：").append(networkLabel).append('\n')
     append("检测跳过：").append(when (skip) {
         MonitorEngine.SkipReason.WIFI_ONLY -> "等待 Wi-Fi"
@@ -61,7 +68,11 @@ internal fun buildDiagnosticReport(
             .append("，最近 ").append(if (h.lastCheckedAt > 0) formatClock(h.lastCheckedAt) else "—")
             .append('\n')
     }
-    append("\n注：本报告不含 Cookie / 令牌；「下次重试时间」暂无数据来源，未列出。")
+    if (recentProblems.isNotEmpty()) {
+        append("\n最近异常：\n")
+        recentProblems.forEach { append("- ").append(it).append('\n') }
+    }
+    append("\n注：本报告不含 Cookie / 令牌；下次检测时间为当前调度估计值，系统回收或 Doze 可能顺延。")
 }
 
 private fun formatClock(ms: Long): String =

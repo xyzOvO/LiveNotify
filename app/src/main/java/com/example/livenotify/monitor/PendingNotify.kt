@@ -49,6 +49,19 @@ internal object PendingNotify {
     }
 
     /**
+     * 纯按时间判定待办是否过期（不依赖场次 key，供主动清理用）。
+     *
+     * [check] 是每轮对「还能查到的在播主播」的懒判定；监控关很久、主播被停用/删除时，
+     * 那条待办不会再经过 check，会一直挂在库里让诊断页显示旧值。主动清理只靠时间：
+     * 超过有效期或系统时间回拨，都一律清掉，绝不会误伤还在有效期内的提醒。
+     */
+    fun expired(pendingSince: Long, now: Long): Boolean {
+        if (pendingSince <= 0L) return false
+        val age = now - pendingSince
+        return age > MAX_AGE_MS || age < 0L
+    }
+
+    /**
      * 补发时告诉用户「这条不是刚开播」，别让他以为主播刚刚上播。
      * 不足 [LATE_HINT_MS] 返回 null，正常实时提醒不该出现这句。
      */

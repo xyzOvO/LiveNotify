@@ -147,6 +147,28 @@ class BackupFormatTest {
     }
 
     @Test
+    fun `导入预览分别数出新增 跳过 无效 与真实导入口径一致`() {
+        val data = BackupFormat.decode(
+            """{"app":"LiveNotify","version":2,"streamers":[
+                {"platformId":"bilibili","anchorId":"exists"},
+                {"platformId":"bilibili","anchorId":"new-one"},
+                {"platformId":"unknown","anchorId":"x"},
+                {"platformId":"bilibili","anchorId":""}
+            ]}"""
+        )
+        val preview = BackupFormat.preview(
+            data,
+            existingKeys = setOf("bilibili" to "exists"),
+            knownPlatformIds = setOf("bilibili", "douyin", "douyu", "huya")
+        )
+        // 空 ID 在 decode 阶段就被丢掉；未知平台会保留到导入时记为失败
+        assertEquals(3, data.entries.size)
+        assertEquals(1, preview.add)
+        assertEquals(1, preview.skip)
+        assertEquals(1, preview.invalid)
+    }
+
+    @Test
     fun `缺少字段或版本非法的备份不会崩`() {
         // 版本 0 / 负数都当作不支持；streamers 缺失时按空列表处理
         for (v in listOf(0, -1)) {

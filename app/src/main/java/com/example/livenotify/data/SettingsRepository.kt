@@ -142,6 +142,31 @@ class SettingsRepository(private val context: Context) {
     suspend fun setHideMonitorNotification(v: Boolean) = edit { it[Keys.HIDE_MONITOR_NOTIFICATION] = v }
     suspend fun setAutoUpdateCheck(v: Boolean) = edit { it[Keys.AUTO_UPDATE_CHECK] = v }
 
+    /**
+     * 一次性写入整套「备份里带的设置」。
+     *
+     * 必须合并成一次 edit：原来 [BackupFormat.Prefs.applyTo] 拆成十几次写，
+     * 中途 DataStore 出错就会留下一半恢复一半原样的状态，和「导入失败已回滚」的说法不符。
+     * 刻意不写 Cookie/最近检查时间/已忽略版本/接口域——这些是本机状态，不进备份。
+     * 拆出这个方法后，[BackupFormat.Prefs.applyTo] 只做一层薄封装，调用方仍能复用。
+     */
+    suspend fun applyBackupPrefs(p: com.example.livenotify.util.BackupFormat.Prefs) = edit {
+        it[Keys.INTERVAL] = p.pollIntervalSec.coerceIn(60, 600)
+        it[Keys.MOBILE_FACTOR] = p.mobileFactor.coerceIn(1, 6)
+        it[Keys.WIFI_ONLY] = p.wifiOnly
+        it[Keys.QUIET_ENABLED] = p.quietEnabled
+        it[Keys.QUIET_START] = p.quietStartMin.coerceIn(0, 1439)
+        it[Keys.QUIET_END] = p.quietEndMin.coerceIn(0, 1439)
+        it[Keys.QUIET_NO_NOTIFY] = p.quietNoNotify
+        it[Keys.CONFIRM_TIMES] = p.confirmTimes.coerceIn(1, 3)
+        it[Keys.COOLDOWN_MIN] = p.cooldownMin.coerceIn(0, 120)
+        it[Keys.MONITOR_ENABLED] = p.monitorEnabled
+        it[Keys.NOTIFY_SOUND] = p.notifySound
+        it[Keys.NOTIFY_VIBRATE] = p.notifyVibrate
+        it[Keys.HIDE_MONITOR_NOTIFICATION] = p.hideMonitorNotification
+        it[Keys.AUTO_UPDATE_CHECK] = p.autoUpdateCheck
+    }
+
     /** 记下「本次检查更新的时刻」；自动检查据此做 24 小时节流，手动检查也会刷新它 */
     suspend fun setLastUpdateCheckAt(ms: Long) = edit { it[Keys.LAST_UPDATE_CHECK] = ms }
 

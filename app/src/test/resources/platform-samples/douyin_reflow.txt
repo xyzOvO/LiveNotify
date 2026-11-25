@@ -1,0 +1,7 @@
+<html><body><script>self.__rsc_f.push([1,"5:[{\\\"data\\\":{\
+\\\"room\\\":{\\\"id\\\":5001,\\\"idStr\\\":\\\"5001001\\\",\\\"status\\\":2,\
+\\\"ownerUserId\\\":6001,\\\"title\\\":\\\"测试标题\\\",\\\"userCount\\\":10,\\\"createTime\\\":1793240555},\
+\\\"user\\\":{\\\"id\\\":0,\\\"nickname\\\":\\\"$undefined\\\",\\\"status\\\":0},\
+\\\"owner\\\":{\\\"id\\\":6001,\\\"shortId\\\":5002,\\\"nickname\\\":\\\"抖音主播 6001\\\",\
+\\\"avatarThumb\\\":{\\\"urlList\\\":[\\\"https://img.example.test/6001.jpeg\\\"]}}\
+}}"])</script></body></html>

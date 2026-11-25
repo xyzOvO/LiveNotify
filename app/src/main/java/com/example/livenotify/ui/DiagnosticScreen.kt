@@ -29,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.livenotify.Graph
+import com.example.livenotify.monitor.MonitorService
 import com.example.livenotify.monitor.NotificationHelper
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -58,12 +60,22 @@ fun DiagnosticScreen(vm: MainViewModel, onBack: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val context = LocalContext.current
     var showReport by remember { mutableStateOf(false) }
+    var recentProblems by remember { mutableStateOf(emptyList<String>()) }
+    LaunchedEffect(Unit) {
+        recentProblems = Graph.db.appLogDao().recentProblems(20).map { log ->
+            val whenText = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(log.atMs))
+            "$whenText [${log.severity}/${log.category}] ${log.message}"
+        }
+    }
 
     val health = remember(list) { platformHealth(list) }
     val engine = Graph.engine
     val lastRun = engine.lastRunAt
     val duration = engine.lastDurationMs
     val skip = engine.lastSkip.collectAsStateWithLifecycle().value
+    val serviceRunning by MonitorService.running.collectAsStateWithLifecycle()
+    val nextTick by MonitorService.nextTickAt.collectAsStateWithLifecycle()
+    val pendingCount = list.count { it.pendingNotifySince > 0L }
     val networkLabel = when {
         settings.wifiOnly && net.kind != com.example.livenotify.monitor.NetworkKind.WIFI -> "等待 Wi-Fi"
         !net.online -> "离线"
@@ -74,8 +86,12 @@ fun DiagnosticScreen(vm: MainViewModel, onBack: () -> Unit) {
         }
     }
     val fmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-    val report = remember(list, lastRun, duration, skip, networkLabel) {
-        buildDiagnosticReport(health, lastRun, duration, skip, networkLabel)
+    val report = remember(list, lastRun, duration, skip, networkLabel, serviceRunning, nextTick, recentProblems) {
+        buildDiagnosticReport(
+            health, lastRun, duration, skip, networkLabel,
+            serviceRunning = serviceRunning, nextTickAt = nextTick, pendingCount = pendingCount,
+            recentProblems = recentProblems
+        )
     }
 
     Scaffold(
@@ -103,8 +119,11 @@ fun DiagnosticScreen(vm: MainViewModel, onBack: () -> Unit) {
                     Column(Modifier.padding(Dimens.SpaceM)) {
                         Text("运行状态", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(Dimens.SpaceS))
+                        Info("后台服务", if (serviceRunning) "运行中" else "未在运行")
                         Info("最近检测", if (lastRun > 0) fmt.format(Date(lastRun)) else "尚未检测")
+                        Info("下次检测", if (nextTick > 0) fmt.format(Date(nextTick)) else "尚未调度")
                         Info("上轮耗时", if (duration > 0) formatRound(duration) else "—")
+                        Info("待补发提醒", "$pendingCount 条")
                         Info("网络", networkLabel)
                         Info("检测跳过", when (skip) {
                             com.example.livenotify.monitor.MonitorEngine.SkipReason.WIFI_ONLY -> "等待 Wi-Fi"
@@ -145,12 +164,27 @@ fun DiagnosticScreen(vm: MainViewModel, onBack: () -> Unit) {
             }
             item {
                 Column(Modifier.padding(Dimens.SpaceL)) {
+                    Text("最近异常", style = MaterialTheme.typography.labelLarge,
+                        color = cs.primary, modifier = Modifier.padding(vertical = Dimens.SpaceS))
+                    if (recentProblems.isEmpty()) {
+                        Text("暂无异常记录", style = MaterialTheme.typography.bodySmall, color = StatusColors.muted())
+                    } else {
+                        recentProblems.take(5).forEach { problem ->
+                            Text("· $problem", style = MaterialTheme.typography.labelSmall,
+                                color = StatusColors.muted(), modifier = Modifier.padding(vertical = 2.dp))
+                        }
+                    }
+                }
+            }
+            item {
+                Column(Modifier.padding(Dimens.SpaceL)) {
                     OutlinedButton(onClick = { showReport = true }, modifier = Modifier.fillMaxWidth()) {
                         Text("查看 / 复制诊断报告")
                     }
                     Spacer(Modifier.height(Dimens.SpaceS))
                     Text(
-                        "「最近请求耗时」「错误类型」「下次预计重试时间」暂无独立数据来源，未虚构展示；报告已脱敏，不含 Cookie 与令牌。",
+                        "「最近请求耗时」「错误类型」暂无独立数据来源，未虚构展示；" +
+                            "下次检测为当前调度估计值（系统回收/Doze 可能顺延）。报告已脱敏，不含 Cookie 与令牌。",
                         style = MaterialTheme.typography.labelSmall,
                         color = StatusColors.muted()
                     )

@@ -30,7 +30,7 @@ class MigrationSqlTest {
 
     private fun schemaFile(): File {
         // AGP 的单测工作目录是模块目录；实在不在就往上层找一遍（不同 Gradle 配置的差异）
-        val relative = "schemas/com.example.livenotify.data.AppDatabase/7.json"
+        val relative = "schemas/com.example.livenotify.data.AppDatabase/8.json"
         val candidates = listOf(File(relative), File("app/$relative"))
         val file = candidates.firstOrNull { it.exists() }
             ?: error("schema JSON 不存在（先跑一次 assembleDebug 让 KSP 导出）：${candidates.map { it.absolutePath }}")
@@ -40,7 +40,7 @@ class MigrationSqlTest {
     private fun expectedColumns(): Map<String, ColumnSpec> {
         val root = MiniJson.parse(schemaFile().readText()) as Map<*, *>
         val db = root["database"] as Map<*, *>
-        assertEquals("schema 版本应与 AppDatabase.version 一致", 7L, asLong(db["version"]))
+        assertEquals("schema 版本应与 AppDatabase.version 一致", 8L, asLong(db["version"]))
         val entity = (db["entities"] as List<*>)
             .map { it as Map<*, *> }
             .single { it["tableName"] == "streamers" }
@@ -116,7 +116,7 @@ class MigrationSqlTest {
 
     private fun Connection.createBaseline(version: Int) {
         // 基线 = v1 建表 + 按版本依次应用迁移 SQL（与当年用户数据库的演进路径一致）
-        val history = listOf(1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7).take(version - 1)
+        val history = listOf(1 to 2, 2 to 3, 3 to 4, 4 to 5, 5 to 6, 6 to 7, 7 to 8).take(version - 1)
         executeUpdate(createV1())
         executeUpdate(
             "CREATE UNIQUE INDEX IF NOT EXISTS `index_streamers_platformId_anchorId` " +
@@ -146,13 +146,13 @@ class MigrationSqlTest {
 
     private fun Connection.migrateFrom(version: Int) {
         var v = version
-        while (v < 7) {
+        while (v < 8) {
             val next = v + 1
             AppDatabase.MIGRATION_SQL.getValue(v to next).forEach { executeUpdate(it) }
             v = next
         }
         // user_version 也要推进，模拟 Room 打开时的真实路径
-        executeUpdate("PRAGMA user_version = 7")
+        executeUpdate("PRAGMA user_version = 8")
     }
 
     private fun Connection.tableColumns(): Map<String, Triple<Boolean, String?, Int>> =
@@ -212,6 +212,8 @@ class MigrationSqlTest {
         assertTrue("v6 迁移应创建 live_sessions 表", "live_sessions" in tables)
         // v7 迁移必须建出分组名册表，否则「新建分组」建不出空组（回到列表就消失）
         assertTrue("v7 迁移应创建 groups 表", "groups" in tables)
+        // v8 迁移必须建出运行日志表，否则日志写入会抛 "no such table"
+        assertTrue("v8 迁移应创建 app_logs 表", "app_logs" in tables)
 
         val rows = conn.streamers()
         assertEquals("两行种子数据都必须保留", 2, rows.size)
@@ -251,6 +253,9 @@ class MigrationSqlTest {
     @Test
     fun `从 v6 升级到最新版结构与数据完整`() = verifyUpgradeFrom(6)
 
+    @Test
+    fun `从 v7 升级到最新版结构与数据完整`() = verifyUpgradeFrom(7)
+
     /**
      * v7 的关键不只是「建了 groups 表」，而是**把已有的分组名灌进名册**。
      * 漏了这条 INSERT，老用户升级后组虽然在（靠主播行兜底），但一新建组就会错位。
@@ -288,10 +293,10 @@ class MigrationSqlTest {
     @Test
     fun `迁移映射覆盖到当前版本且连续`() {
         val steps = AppDatabase.MIGRATION_SQL.keys
-        // 从 1 到 6 每一步都要有 SQL，否则 Room 打开老库会直接崩
-        for (v in 1 until 7) {
+        // 从 1 到 7 每一步都要有 SQL，否则 Room 打开老库会直接崩
+        for (v in 1 until 8) {
             assertTrue("缺少 v$v 的迁移 SQL", steps.contains(v to v + 1))
         }
-        assertEquals(6, steps.size)
+        assertEquals(7, steps.size)
     }
 }

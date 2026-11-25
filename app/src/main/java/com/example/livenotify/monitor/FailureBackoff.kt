@@ -19,6 +19,17 @@ internal object FailureBackoff {
     const val MAX_GAP_MS = 30 * 60_000L
 
     /**
+     * 平台层把失败分成「网络抖动（可重试）」与「接口变更/解析失败（不可重试）」两类。
+     * 前者每轮重试有希望自愈，按 1 次累加错误、正常退避即可；
+     * 后者重试多少轮也不会变好，只会徒增流量/加重风控，因此按更大的步长累加，
+     * 让它更快跨过 [THRESHOLD] 进入退避。这就是 Outcome.Failed.retryable 真正影响退避的接线点。
+     */
+    const val NON_RETRYABLE_STEP = 3
+
+    /** 本轮失败应累加到 errorCount 的步长：可重试=1，不可重试=3（更快退避）。 */
+    fun failureStep(retryable: Boolean): Int = if (retryable) 1 else NON_RETRYABLE_STEP
+
+    /**
      * @param errorCount 该主播当前连续失败次数
      * @param lastCheckedAt 上次尝试查询的时刻（毫秒），<=0 视为从未查过
      * @param now 当前时刻（毫秒）

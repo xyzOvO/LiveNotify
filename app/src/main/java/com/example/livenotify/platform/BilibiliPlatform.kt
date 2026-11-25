@@ -95,7 +95,10 @@ object BilibiliPlatform : LivePlatform {
                 chunk.forEach uidLoop@{ uid ->
                     val item = data.optJSONObject(uid)
                     if (item == null) {
-                        out.add(Outcome.Missing(uid, "主播不存在、已注销或未开通直播间"))
+                        // 部分返回/限流时接口可能只给部分主播的数据。此时绝不能判 Missing：
+                        // MonitorEngine 收到 Missing 会写 isLive=false 并清掉待补发通知，
+                        // 表现为「在播主播被误报下播」。改为可重试失败，保持已知状态。
+                        out.add(Outcome.Failed(uid, "B站批量接口未返回该主播，保留上次状态", true))
                         return@uidLoop
                     }
                     if (!item.has("live_status")) {
@@ -103,7 +106,8 @@ object BilibiliPlatform : LivePlatform {
                         return@uidLoop
                     }
                     val status = item.optInt("live_status", -1)
-                    if (status !in 0..2) {
+                    val liveState = StatusInterpret.biliStatus(status)
+                    if (liveState == null) {
                         out.add(Outcome.Failed(uid, "B站返回未知的 live_status=$status", false))
                         return@uidLoop
                     }
@@ -119,7 +123,7 @@ object BilibiliPlatform : LivePlatform {
                                 avatarUrl = item.optString("face", "").takeIf { it.isNotBlank() },
                                 title = item.optString("title", ""),
                                 // 1=直播中；2=轮播（按未开播处理，不推送）；0=未开播
-                                state = if (status == 1) LiveState.LIVE else LiveState.OFF,
+                                state = liveState,
                                 liveStartAt = item.optLong("live_time", 0L),
                                 roomUrl = if (roomId > 0) "https://live.bilibili.com/$roomId"
                                 else fallbackUrl(uid),

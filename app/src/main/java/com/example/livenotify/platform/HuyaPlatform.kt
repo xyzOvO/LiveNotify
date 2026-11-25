@@ -103,13 +103,19 @@ object HuyaPlatform : LivePlatform {
         val data = root.optJSONObject("data")
             ?: return Outcome.Failed(rid, "虎牙接口缺少 data 字段", retryable = false)
 
-        val live = data.optString("liveStatus", "").uppercase()
-        val real = data.optString("realLiveStatus", "").uppercase()
-        if (live != "ON" && live != "OFF") {
-            return Outcome.Failed(rid, "虎牙返回未知 liveStatus=$live", retryable = false)
+        val verdict = StatusInterpret.huyaStatus(
+            data.optString("liveStatus", ""),
+            data.optString("realLiveStatus", "")
+        )
+        if (!verdict.valid) {
+            return Outcome.Failed(
+                rid,
+                "虎牙返回未知 liveStatus=${data.optString("liveStatus", "")}",
+                retryable = false
+            )
         }
         // 两个字段不一致时保守处理：宁可当作未开播，也不误报开播
-        val isLive = live == "ON" && (real.isBlank() || real == "ON")
+        val isLive = verdict.isLive
 
         val profile = data.optJSONObject("profileInfo")
         val liveData = data.optJSONObject("liveData")

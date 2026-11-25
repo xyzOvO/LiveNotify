@@ -1,0 +1,16 @@
+{
+  "status": 200,
+  "message": "OK",
+  "data": {
+    "liveStatus": "ON",
+    "realLiveStatus": "ON",
+    "profileInfo": {
+      "nick": "虎牙主播 4001",
+      "avatar180": "//img.example.test/4001"
+    },
+    "liveData": {
+      "introduction": "测试标题",
+      "sIntroduction": ""
+    }
+  }
+}

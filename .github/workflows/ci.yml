@@ -121,6 +121,19 @@ jobs:
             exit 1
           fi
 
+      # 产物完整性：APK 非空且 >1MB 才发布；SHA-256 写进 Release 说明并作为独立 asset 上传。
+      # UpdateApi 走 GitHub asset 路径能拿到 digest 时会校验，302 兜底路径拿不到则跳过。
+      - name: 计算产物 SHA-256
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          SIZE=$(stat -c%s "$APK")
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::Release APK 只有 $SIZE 字节（<1MB），疑似构建异常，已中止发布"
+            exit 1
+          fi
+          sha256sum "$APK" | tee app-release.apk.sha256
+          echo "APK_SIZE=$SIZE" >> "$GITHUB_ENV"
+
       # tag 即版本：APK 里的 versionName / versionCode 必须与触发发布的 tag 一致，
       # 且必须高于上一个版本，否则用户的应用内更新会报「低于当前版本」或装不上。
       - name: 校验版本号与 Git Tag 一致
@@ -172,6 +185,12 @@ jobs:
               echo ""
               echo "**完整对比**：https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${GITHUB_REF_NAME}"
             fi
+            echo ""
+            echo "## 安装包校验"
+            echo ""
+            echo "- 文件大小：${APK_SIZE} 字节"
+            echo "- SHA-256：$(awk '{print $1}' app-release.apk.sha256)"
+            echo "- 签名指纹：284d73dfe8925a302bde55fb0a348ee92fa0ffcd2d59f8854c21b2e38323a6f2"
           } > release_notes.md
           echo "----- 生成的说明 -----"
           cat release_notes.md
@@ -179,6 +198,8 @@ jobs:
       - name: 挂到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/release/app-release.apk
+          files: |
+            app/build/outputs/apk/release/app-release.apk
+            app-release.apk.sha256
           # body_path 与 generate_release_notes 不能共存，后者会把正文覆盖成一行 changelog
           body_path: release_notes.md

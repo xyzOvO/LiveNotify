@@ -206,7 +206,7 @@ fun MainScreen(
     var groupFilter by rememberSaveable { mutableStateOf<String?>(null) }
     val keyboard = LocalSoftwareKeyboardController.current
     val searchFocus = remember { FocusRequester() }
-    val visible = remember(list, query, platformFilter, liveOnly) {
+    val visible = remember(list, query, platformFilter, liveOnly, groupFilter) {
         list.filter { s ->
             matchesSearchQuery(query, s.nickname, s.displayId, s.anchorId, s.note) &&
                 (platformFilter == null || s.platformId == platformFilter) &&

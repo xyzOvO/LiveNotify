@@ -2,6 +2,7 @@ package com.example.livenotify
 
 import com.example.livenotify.data.StreamerEntity
 import com.example.livenotify.monitor.SessionEvent
+import com.example.livenotify.monitor.closingSessionTitle
 import com.example.livenotify.monitor.sessionEvent
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -57,6 +58,57 @@ class SessionEventsTest {
         assertEquals(
             SessionEvent.NONE,
             sessionEvent(streamer(isLive = true, startAt = 100L), true, 0L)
+        )
+    }
+
+    // ---- 收口标题：历史里每场标题必须是那一场自己的 ----
+
+    @Test
+    fun `换场收口 不把下一场的标题写进上一场`() {
+        assertEquals(
+            "老标题",
+            closingSessionTitle(
+                sessionTitle = "老标题",
+                snapshotTitle = "新标题",
+                event = SessionEvent.SWITCH
+            )
+        )
+    }
+
+    @Test
+    fun `换场收口 会话标题为空时也不回填新标题`() {
+        assertEquals(
+            "",
+            closingSessionTitle(
+                sessionTitle = "",
+                snapshotTitle = "新标题",
+                event = SessionEvent.SWITCH
+            )
+        )
+    }
+
+    @Test
+    fun `下播收口 保留会话自己的最后标题`() {
+        // 直播中 updateTitle 已跟进到最新；离线页即便给出别的值也不该改这一场
+        assertEquals(
+            "本场最后标题",
+            closingSessionTitle(
+                sessionTitle = "本场最后标题",
+                snapshotTitle = "离线页的标题",
+                event = SessionEvent.CLOSE
+            )
+        )
+    }
+
+    @Test
+    fun `下播收口 会话标题为空时用快照兜底`() {
+        assertEquals(
+            "补上的标题",
+            closingSessionTitle(
+                sessionTitle = "",
+                snapshotTitle = "补上的标题",
+                event = SessionEvent.CLOSE
+            )
         )
     }
 }

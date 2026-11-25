@@ -2,7 +2,9 @@ package com.example.livenotify
 
 import com.example.livenotify.monitor.PendingNotify
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -114,6 +116,15 @@ class PendingNotifyTest {
                 now = now
             )
         )
+    }
+
+    @Test
+    fun `主动清理按时间判定过期与回拨`() {
+        assertFalse("没有待办不清", PendingNotify.expired(pendingSince = 0L, now = now))
+        assertFalse("有效期内不清", PendingNotify.expired(pendingSince = now - 60_000L, now = now))
+        assertFalse("正好卡有效期不清", PendingNotify.expired(pendingSince = now - PendingNotify.MAX_AGE_MS, now = now))
+        assertTrue("超期清掉", PendingNotify.expired(pendingSince = now - PendingNotify.MAX_AGE_MS - 1L, now = now))
+        assertTrue("时间回拨清掉", PendingNotify.expired(pendingSince = now + 60_000L, now = now))
     }
 
     @Test

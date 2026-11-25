@@ -965,8 +965,8 @@ private fun BackupBlock(vm: MainViewModel, context: Context) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
-    /** 已读出但尚未确认的备份：确认前绝不写库 */
-    var pending by remember { mutableStateOf<Pair<String, BackupFormat.Data>?>(null) }
+    /** 已读出但尚未确认的备份：(原文, 解析结果, 预览计数)；确认前绝不写库 */
+    var pending by remember { mutableStateOf<Triple<String, BackupFormat.Data, BackupFormat.Preview>?>(null) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument(BackupFormat.MIME)
@@ -1009,7 +1009,12 @@ private fun BackupBlock(vm: MainViewModel, context: Context) {
                 return@launch
             }
             // 只展示，不落库；用户在下面的对话框里决定
-            pending = text to parsed.getOrThrow()
+            val dao = com.example.livenotify.Graph.db.streamerDao()
+            val existingKeys = dao.allAnchorKeys().map { it.platformId to it.anchorId }.toSet()
+            val knownPlatforms = PlatformRegistry.all().map { it.id }.toSet()
+            val parsedData = parsed.getOrThrow()
+            val preview = BackupFormat.preview(parsedData, existingKeys, knownPlatforms)
+            pending = Triple(text, parsedData, preview)
         }
     }
 
@@ -1052,13 +1057,19 @@ private fun BackupBlock(vm: MainViewModel, context: Context) {
         }
     }
 
-    pending?.let { (raw, data) ->
+    pending?.let { (raw, data, preview) ->
         AlertDialog(
             onDismissRequest = { pending = null },
             title = { Text("导入这份备份？") },
             text = {
                 Column {
-                    Text("共 ${data.entries.size} 位主播，另含检测与提醒设置。")
+                    Text("共 ${data.entries.size} 位主播：新增 ${preview.add} 位，已存在跳过 ${preview.skip} 位。")
+                    if (preview.invalid > 0) {
+                        Spacer(Modifier.height(4.dp))
+                        Text("另有 ${preview.invalid} 位平台或 ID 无效，导入时会记为失败。",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                    Text("分组与白名单设置也会一并恢复。", style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "已有的主播保持原样，不会覆盖；新主播会重新联网获取信息。" +

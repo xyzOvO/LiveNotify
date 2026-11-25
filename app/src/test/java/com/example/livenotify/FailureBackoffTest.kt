@@ -57,6 +57,17 @@ class FailureBackoffTest {
     }
 
     @Test
+    fun `retryable 接线 不可重试失败更快进入退避`() {
+        // 网络抖动可重试：每次 +1；接口变更/解析失败不可重试：每次 +3，更快跨过退避阈值
+        assertEquals(1, FailureBackoff.failureStep(retryable = true))
+        assertEquals(FailureBackoff.NON_RETRYABLE_STEP, FailureBackoff.failureStep(retryable = false))
+        val last = 1_000L
+        // 2 次不可重试失败 = errorCount 6，已过阈值 5：本轮应跳过；2 次可重试 = 2，仍不跳过
+        assertTrue(FailureBackoff.shouldSkip(2 * FailureBackoff.failureStep(false), last, last + base, base))
+        assertFalse(FailureBackoff.shouldSkip(2 * FailureBackoff.failureStep(true), last, last + base, base))
+    }
+
+    @Test
     fun `后台异常退避指数增长且封顶`() {
         assertEquals(PollSchedule.ERROR_BACKOFF_BASE_MS, PollSchedule.errorBackoffMs(0))
         assertEquals(60_000L, PollSchedule.errorBackoffMs(1))

@@ -8,14 +8,15 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [StreamerEntity::class, LiveSessionEntity::class, GroupEntity::class],
-    version = 7,
+    entities = [StreamerEntity::class, LiveSessionEntity::class, GroupEntity::class, AppLogEntity::class],
+    version = 8,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun streamerDao(): StreamerDao
     abstract fun liveSessionDao(): LiveSessionDao
     abstract fun groupDao(): GroupDao
+    abstract fun appLogDao(): AppLogDao
 
     companion object {
         @Volatile
@@ -76,6 +77,20 @@ abstract class AppDatabase : RoomDatabase() {
                     "PRIMARY KEY(`name`))",
                 "INSERT OR IGNORE INTO `groups` (`name`, `sortOrder`) " +
                     "SELECT `group`, 0 FROM `streamers` WHERE `group` != '' GROUP BY `group`"
+            ),
+            // v7 → v8：新增运行日志表（诊断用，脱敏写入，7 天 + 5000 条上限由 DAO 维护）
+            (7 to 8) to listOf(
+                "CREATE TABLE IF NOT EXISTS `app_logs` (" +
+                    "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                    "`atMs` INTEGER NOT NULL, " +
+                    "`category` TEXT NOT NULL, " +
+                    "`severity` TEXT NOT NULL, " +
+                    "`message` TEXT NOT NULL, " +
+                    "`anchorId` TEXT, " +
+                    "`platformId` TEXT" +
+                    ")",
+                "CREATE INDEX IF NOT EXISTS `index_app_logs_atMs` ON `app_logs` (`atMs`)",
+                "CREATE INDEX IF NOT EXISTS `index_app_logs_category` ON `app_logs` (`category`)"
             )
         )
 
@@ -91,6 +106,7 @@ abstract class AppDatabase : RoomDatabase() {
         private val MIGRATION_4_5 = migrationOf(4, 5)
         private val MIGRATION_5_6 = migrationOf(5, 6)
         private val MIGRATION_6_7 = migrationOf(6, 7)
+        private val MIGRATION_7_8 = migrationOf(7, 8)
 
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
@@ -101,7 +117,7 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     .addMigrations(
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
-                        MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7
+                        MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8
                     )
                     .build()
                     .also { instance = it }
