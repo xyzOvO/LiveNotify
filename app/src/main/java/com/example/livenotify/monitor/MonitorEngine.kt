@@ -287,6 +287,20 @@ class MonitorEngine(
                             lastError = null
                         )
 
+                        // 确认下播（wasLive=true 且 confirmedLive=false）：撤掉上一场开播通知。
+                        // 单次失败/Unknown 时 confirmedLive 仍为 true，绝不会误撤正在播的通知。
+                        // 用「已发过通知的场次种子」反推 id，和发通知时的 seed 口径一致。
+                        if (NotificationPolicy.shouldCancelLiveNotification(
+                                wasLive = s.isLive,
+                                confirmedLive = transition.confirmedLive,
+                                lastNotifiedSeed = s.lastNotifiedLiveStart
+                            )
+                        ) {
+                            NotificationHelper.cancelLiveNotification(
+                                context, s.id, s.lastNotifiedLiveStart
+                            )
+                        }
+
                         var notifySent: Boolean? = null // 本轮是否尝试过推送：null=没尝试
                         if (transition.confirmedLive && (wantsFresh || wantsRetry)) {
                             val lateByMs = if (wantsRetry) {

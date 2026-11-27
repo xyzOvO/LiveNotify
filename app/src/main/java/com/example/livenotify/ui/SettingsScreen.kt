@@ -115,7 +115,9 @@ fun SettingsScreen(
     /** 打开平台健康诊断页 */
     onOpenDiagnostic: () -> Unit = {},
     /** 打开检测详细设置页（逐项调间隔/降频/确认次数/提醒间隔） */
-    onOpenDetectDetail: () -> Unit = {}
+    onOpenDetectDetail: () -> Unit = {},
+    /** 打开抖音 WebView 登录抓 Cookie 页 */
+    onOpenDouyinLogin: () -> Unit = {}
 ) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val updateState by vm.update.collectAsStateWithLifecycle()
@@ -505,7 +507,7 @@ fun SettingsScreen(
                         OutlinedButton(onClick = onOpenDiagnostic) { Text("查看诊断") }
                     }
                     ItemDivider()
-                    DouyinCookieBlock(vm = vm, settings = settings)
+                    DouyinCookieBlock(vm = vm, settings = settings, onOpenLogin = onOpenDouyinLogin)
                     ItemDivider()
                     PlatformStatusBlock()
                 }
@@ -1111,7 +1113,7 @@ private fun BackupBlock(vm: MainViewModel, context: Context) {
  * 以前直接摆一个空输入框，用户不知道要不要填、填了会存到哪。
  */
 @Composable
-private fun DouyinCookieBlock(vm: MainViewModel, settings: Settings) {
+private fun DouyinCookieBlock(vm: MainViewModel, settings: Settings, onOpenLogin: () -> Unit) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     var draft by remember(settings.douyinCookie) { mutableStateOf(settings.douyinCookie) }
     var reveal by remember { mutableStateOf(false) }
@@ -1144,11 +1146,24 @@ private fun DouyinCookieBlock(vm: MainViewModel, settings: Settings) {
                 OutlinedButton(onClick = { expanded = true }) {
                     Text(if (configured) "更换" else "配置 Cookie")
                 }
+                OutlinedButton(onClick = onOpenLogin) {
+                    Text("登录抓取")
+                }
                 if (configured) {
                     OutlinedButton(onClick = { confirmClear = true }) { Text("清除") }
                 }
             }
         } else {
+            OutlinedButton(onClick = onOpenLogin, modifier = Modifier.fillMaxWidth()) {
+                Text("在 App 内登录抖音并自动抓取（推荐）")
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "推荐用上面的登录抓取；下面手动粘贴是给高级用户的备用方式。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline
+            )
+            Spacer(Modifier.height(6.dp))
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
@@ -1177,7 +1192,7 @@ private fun DouyinCookieBlock(vm: MainViewModel, settings: Settings) {
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "在浏览器登录 live.douyin.com 后，从开发者工具复制请求头里的 Cookie。留空保存即清除。",
+                "手动粘贴仅作备用：在浏览器登录 live.douyin.com 后，从开发者工具复制请求头里的 Cookie。留空保存即清除。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline
             )

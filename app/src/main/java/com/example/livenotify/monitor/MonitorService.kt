@@ -8,6 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -16,13 +18,14 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -38,6 +41,71 @@ class MonitorService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var loopJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 网络恢复信号：每次 onAvailable 触发 complete，让正在 delay 的循环提前醒来重跑一轮。
+     * CompletableDeferred 只能 complete 一次，用完立刻 replaced，避免多次 onAvailable 堆在同一信号上。
+     */
+    @Volatile
+    private var wakeSignal: CompletableDeferred<Unit>? = null
+
+    /** 上一次「网络唤醒」的时刻，供 NetworkWake 节流；回调线程与协程线程都会读写 */
+    @Volatile
+    private var lastWakeAt = 0L
+
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /** 网络恢复时注册的默认网络回调：只负责「打信号」，实际重跑仍由轮询循环统一做 */
+    private fun registerNetworkWake() {
+        if (networkCallback != null) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = onNetworkAvailable()
+        }
+        runCatching {
+            cm.registerDefaultNetworkCallback(cb)
+            networkCallback = cb
+            Log.i(TAG, "network wake callback registered")
+        }.onFailure { Log.w(TAG, "register network wake failed: ${it.message}") }
+    }
+
+    private fun unregisterNetworkWake() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        networkCallback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
+        networkCallback = null
+    }
+
+    /** 网络恢复：过节流门槛才打信号，避免网络抖动把接口打爆 */
+    private fun onNetworkAvailable() {
+        val now = System.currentTimeMillis()
+        val lastRun = com.example.livenotify.Graph.engine.lastRunAt
+        if (!NetworkWake.shouldWake(lastRun, lastWakeAt, now)) return
+        lastWakeAt = now
+        Log.i(TAG, "network available -> wake poll")
+        wakeSignal?.let { it.complete(Unit); wakeSignal = null }
+    }
+
+    /**
+     * 可打断等待：要么等满 [waitMs]，要么被网络恢复信号提前唤醒。
+     *
+     * 除了正常的 delay 场景，还兜住一个竞争窗口：若 onAvailable 发生在上一轮 runOnce
+     * 结束、本轮信号建立之前（此时没有等待者可通知），用 lastWakeAt > lastRunAt 判断
+     * 「上次检测之后网络恢复过」，直接跳过等待立刻重跑，不把这个唤醒丢掉。
+     */
+    private suspend fun waitOrWake(waitMs: Long) {
+        val signal = CompletableDeferred<Unit>()
+        wakeSignal = signal
+        val lastRun = com.example.livenotify.Graph.engine.lastRunAt
+        if (lastWakeAt > lastRun && lastWakeAt > 0L) {
+            wakeSignal = null
+            return
+        }
+        try {
+            withTimeoutOrNull(waitMs) { signal.await() }
+        } finally {
+            wakeSignal = null
+        }
+    }
 
     /** 上次成功读到的监控开关；设置读盘失败时沿用它，而不是默认「已开启」 */
     private var lastEnabled = true
@@ -60,6 +128,7 @@ class MonitorService : Service() {
         val n = NotificationHelper.monitorNotification(this, "正在准备首次检测…", 0, false)
         ServiceCompat.startForeground(this, NotificationHelper.MONITOR_ID, n, foregroundType())
         lastForegroundHidden = false
+        registerNetworkWake()
     }
 
     /** Android 14 起 startForeground 必须声明类型；ServiceCompat 兼容低版本 */
@@ -123,7 +192,7 @@ class MonitorService : Service() {
                             " pending=${report.pending}" +
                             " took=${report.durationMs}ms period=${period}ms wait=${wait}ms skip=${report.skip}"
                     )
-                    delay(wait)
+                    waitOrWake(wait) // 网络恢复可提前打断这段等待，不必等满整个周期
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (t: Throwable) {
@@ -131,7 +200,7 @@ class MonitorService : Service() {
                     nextTickAt.value = 0L // 进入异常退避，之前的调度时间点已作废
                     val wait = PollSchedule.errorBackoffMs(consecutiveFailures)
                     Log.w(TAG, "loop error #$consecutiveFailures, backoff ${wait}ms", t)
-                    delay(wait) // 连续异常指数退避，成功一轮即重置
+                    waitOrWake(wait) // 网络恢复时提前结束异常退避（网络刚恢复正是最该重试的时刻）
                 }
             }
         }
@@ -210,6 +279,8 @@ class MonitorService : Service() {
 
     override fun onDestroy() {
         running.value = false
+        unregisterNetworkWake()
+        wakeSignal?.let { it.complete(Unit); wakeSignal = null }
         loopJob?.cancel()
         super.onDestroy()
     }

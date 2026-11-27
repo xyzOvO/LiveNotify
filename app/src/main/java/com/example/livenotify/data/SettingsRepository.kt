@@ -85,7 +85,9 @@ class SettingsRepository(private val context: Context) {
                 quietNoNotify = p[Keys.QUIET_NO_NOTIFY] ?: true,
                 confirmTimes = p[Keys.CONFIRM_TIMES] ?: 1,
                 cooldownMin = p[Keys.COOLDOWN_MIN] ?: 10,
-                douyinCookie = p[Keys.DOUYIN_COOKIE] ?: "",
+                // DataStore 里存的是 CookieVault 密文；对外仍暴露明文，DouyinPlatform 管线不用改。
+                // decrypt 对旧明文原样返回，天然兼容升级前的配置。
+                douyinCookie = CookieVault.decrypt(p[Keys.DOUYIN_COOKIE] ?: ""),
                 monitorEnabled = p[Keys.MONITOR_ENABLED] ?: true,
                 notifySound = p[Keys.NOTIFY_SOUND] ?: true,
                 notifyVibrate = p[Keys.NOTIFY_VIBRATE] ?: true,
@@ -135,7 +137,12 @@ class SettingsRepository(private val context: Context) {
     }
     suspend fun setConfirmTimes(n: Int) = edit { it[Keys.CONFIRM_TIMES] = n.coerceIn(1, 3) }
     suspend fun setCooldownMin(n: Int) = edit { it[Keys.COOLDOWN_MIN] = n.coerceIn(0, 120) }
-    suspend fun setDouyinCookie(c: String) = edit { it[Keys.DOUYIN_COOKIE] = c.trim() }
+    /** 写入抖音 Cookie：先用 AndroidKeyStore 加密再落盘；空串表示清除。 */
+    suspend fun setDouyinCookie(c: String) = edit {
+        val trimmed = c.trim()
+        if (trimmed.isBlank()) it.remove(Keys.DOUYIN_COOKIE)
+        else it[Keys.DOUYIN_COOKIE] = CookieVault.encrypt(trimmed)
+    }
     suspend fun setMonitorEnabled(v: Boolean) = edit { it[Keys.MONITOR_ENABLED] = v }
     suspend fun setNotifySound(v: Boolean) = edit { it[Keys.NOTIFY_SOUND] = v }
     suspend fun setNotifyVibrate(v: Boolean) = edit { it[Keys.NOTIFY_VIBRATE] = v }

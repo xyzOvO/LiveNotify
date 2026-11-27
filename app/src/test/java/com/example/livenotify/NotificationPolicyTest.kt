@@ -67,6 +67,34 @@ class NotificationPolicyTest {
     }
 
     @Test
+    fun `确认下播才撤通知 未知或未确认不撤`() {
+        // 真在播 → 确认下播，且发过通知：撤
+        assertTrue(
+            NotificationPolicy.shouldCancelLiveNotification(
+                wasLive = true, confirmedLive = false, lastNotifiedSeed = 1_700_000_000L
+            )
+        )
+        // 单次失败/Unknown：confirmedLive 仍为 true，不撤（正在播）
+        org.junit.Assert.assertFalse(
+            NotificationPolicy.shouldCancelLiveNotification(
+                wasLive = true, confirmedLive = true, lastNotifiedSeed = 1_700_000_000L
+            )
+        )
+        // 本来就没在播：不撤
+        org.junit.Assert.assertFalse(
+            NotificationPolicy.shouldCancelLiveNotification(
+                wasLive = false, confirmedLive = false, lastNotifiedSeed = 1_700_000_000L
+            )
+        )
+        // 从没发过通知（种子为 0）：没有可撤的，不撤
+        org.junit.Assert.assertFalse(
+            NotificationPolicy.shouldCancelLiveNotification(
+                wasLive = true, confirmedLive = false, lastNotifiedSeed = 0L
+            )
+        )
+    }
+
+    @Test
     fun `连续测试通知使用不同 id`() {
         val first = NotificationPolicy.testNotificationId(1_700_000_000L)
         val second = NotificationPolicy.testNotificationId(1_700_000_001L)

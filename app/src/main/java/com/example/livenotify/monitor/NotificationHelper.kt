@@ -269,6 +269,15 @@ object NotificationHelper {
         }
     }
 
+    /** 确认下播后撤掉上一场开播通知：只用已落库的 lastNotifiedLiveStart 反推 id，不再需要内存状态 */
+    fun cancelLiveNotification(context: Context, streamerId: Long, sessionSeed: Long) {
+        if (sessionSeed <= 0L) return
+        runCatching {
+            NotificationManagerCompat.from(context)
+                .cancel(NotificationPolicy.liveNotificationId(streamerId, sessionSeed))
+        }
+    }
+
     /** 发送测试通知；返回 false 表示通知权限未开启（调用方据此提示用户，别静默失败） */
     fun testNotification(context: Context): Boolean {
         if (!canNotify(context)) return false

@@ -2,6 +2,8 @@ package com.example.livenotify.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -208,7 +210,20 @@ fun DiagnosticScreen(vm: MainViewModel, onBack: () -> Unit) {
                     showReport = false
                 }) { Text("复制") }
             },
-            dismissButton = { TextButton(onClick = { showReport = false }) { Text("关闭") } }
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        // 只跳到 issues 列表页，让用户自己点「New issue」；
+                        // 不预填报告、不代建 issue——报告可能含主播列表，交给用户自己判断是否贴。
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/xyzOvO/LiveNotify/issues"))
+                            )
+                        }
+                    }) { Text("去反馈") }
+                    TextButton(onClick = { showReport = false }) { Text("关闭") }
+                }
+            }
         )
     }
 }

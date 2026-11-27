@@ -46,7 +46,7 @@
   <sub><b>Home screen (search expanded)</b> · sticky search field / filter chips / four platform cards · closing search reveals the magnifier entry (see <a href="#ui">🖼 Screens &amp; UI</a>)</sub>
 </p>
 
-Supports **Bilibili / Douyin / Douyu / Huya**. A foreground service polls in the background (120 seconds by default), posts a local notification when someone goes live, and **tapping it opens the live room directly**. Each card shows "live for…" or "last live 5 days ago", so the state of every platform is visible at a glance.
+Supports **Bilibili / Douyin / Douyu / Huya**. A foreground service polls in the background (120 seconds by default), posts a local notification when someone goes live, and **tapping it opens the live room directly**; the notification is cleared once the stream is confirmed offline. Regaining network connectivity triggers an immediate extra check instead of waiting a whole interval. Each card shows "live for…" or "last live 5 days ago", so the state of every platform is visible at a glance.
 
 There is also an optional **Bilibili stats page**: follower history, monthly audience trends, career totals, and interaction analysis for any UID (messages / gifts / active hours / favourite rooms). Every number is labelled with its statistical scope — lifetime totals are never presented as "last month".
 
@@ -90,6 +90,8 @@ To add a streamer: tap **+** at the bottom right and paste a room URL or a room 
 | **Multi-platform** | Bilibili / Douyin / Douyu / Huya behind a pluggable platform layer — adding one means implementing a single interface |
 | **Fixed-period polling** | Set 120 s and the next round starts exactly 120 s after this round *started*; request time is already included. A round that overruns skips to the next slot instead of catching up with back-to-back runs |
 | **No network, no requests** | When the active network fails the system connectivity check, the whole round is skipped: no requests, no error counters, no state changes. The foreground notification and home screen say "Waiting for network" (or "Waiting for Wi-Fi" when Wi-Fi-only mode is on) |
+| **Reconnect wakes the poller** | A system network callback triggers one immediate check when connectivity returns (airplane mode off, etc.), with a 60 s cooldown to avoid churn — no waiting out the rest of the interval |
+| **Rate limits aren't mistaken for offline** | If Bilibili's batch endpoint rate-limits or returns partial data, the missing streamer is treated as a retryable failure and keeps its last state — not flipped to offline with its pending alert cleared |
 | **Three guards against false alarms** | State transition + consecutive confirmations + per-session deduplication, so a flaky network cannot fake a "just went live" event |
 | **Battery & data friendly** | Bilibili's batch endpoint handles 20 streamers in one request; polling slows down on mobile data; optional Wi-Fi-only mode; zero requests while offline |
 | **Honest status** | If the service is not running, notification permission is off, or a round was skipped, the UI says so explicitly instead of claiming "all quiet" |
@@ -98,7 +100,7 @@ To add a streamer: tap **+** at the bottom right and paste a room URL or a room 
 
 | Feature | Details |
 |---|---|
-| **Live notification** | Tapping it opens the live room; one notification per session, plus a cooldown |
+| **Live notification** | Tapping it opens the live room; one notification per session, plus a cooldown. The alert is actively cleared once the offline state is confirmed — a single failed check or network blip won't remove it |
 | **Adjustable alert style** | Sound and vibration for live alerts can be toggled separately (notification channels on Android 8+) |
 | **Hide the persistent notification** | A foreground service must keep one notification; it can be minimised to the lowest visibility or disabled entirely in the system channel settings |
 | **Missed alerts are re-sent** | If notification permission or the live-alert channel is off, that session is *not* marked as notified. Once permission is back, the next round re-sends it; alerts older than 30 minutes are dropped (alerts suppressed by quiet hours never enter the queue at all) |
@@ -113,7 +115,7 @@ To add a streamer: tap **+** at the bottom right and paste a room URL or a room 
 | **Tap / long-press to manage** | Cards never navigate on their own — both gestures open the action sheet: open room / copy link / Bilibili stats / pause / remove |
 | **Share-sheet import** | Share a live-room text from Bilibili, Douyin, etc. → choose "开播提醒" → the platform is detected and the field is prefilled; nothing is added until you confirm |
 | **Pause / resume** | A paused card stays in the list but is not polled or notified; resuming aligns with the current session so an ongoing stream is not reported as new |
-| **Backup & restore** | Export / import JSON to a local file for a new phone or a reinstall; cookies, live state and cooldowns are deliberately excluded. Import writes in a single transaction — any failure rolls the whole batch back and never overwrites existing notes or pause states |
+| **Backup & restore** | Export / import JSON to a local file for a new phone or a reinstall; cookies, live state and cooldowns are deliberately excluded. Import shows a preview ("N added / M skipped — already present") before writing, then writes streamers and settings as one unit — any failure rolls everything back and never overwrites existing notes or pause states |
 | **Fully local** | No account, no server, no analytics. Everything lives in a local Room database |
 
 ### 📊 Data, Updates & Reliability
@@ -124,8 +126,9 @@ To add a streamer: tap **+** at the bottom right and paste a room URL or a room 
 | **Bilibili interaction events** | Enter any UID to see messages, gifts, subscriptions, active hours and favourite rooms |
 | **Cached Bilibili stats** | The last successful result is stored locally: reopening shows the cache with an "updated X ago" label and keeps it even when stale; only a manual refresh hits the network, and a failed refresh keeps the old data |
 | **In-app updater** | Silently checks GitHub Releases on launch: current vs. latest version side by side, full changelog, byte-level download progress, in-place retry, SHA-256 verification, signature comparison, then the system installer |
-| **Data you can trust** | Migration tests run the full chain on real SQLite from v1 / v2 / v3, compare every column against the committed schema snapshot, and verify pause state and dedup fields row by row. Release CI also verifies the signing fingerprint and that versionName / versionCode match the tag |
-| **Settings explain the impact** | Grouped into five sections: Polling / Notifications / Background permissions / Data / Other, with a status card showing the effective interval, last round duration (red when it overruns) and current network |
+| **Data you can trust** | Migration tests run the full chain on real SQLite from v1 / v2 / v3 / v7 (now up to v8), compare every column against the committed schema snapshot, and verify pause state and dedup fields row by row. Release CI verifies the signing fingerprint, that versionName / versionCode match the tag, and ships a SHA-256 checksum alongside the APK |
+| **Local-only run log** | Detection failures and undelivered alerts are redacted and written to a local Room table (auto-pruned at 7 days or 5000 rows); the diagnostics page shows "Recent issues". Reports contain no cookie / token and can be copied or filed via GitHub Issues |
+| **Settings explain the impact** | Grouped into five sections: Polling / Notifications / Background permissions / Data / Other, with a status card showing the effective interval, last round duration (red when it overruns), current network, next check time and pending alert count |
 
 ---
 
@@ -172,9 +175,10 @@ Every card shows the avatar (with a platform badge in the bottom-right corner), 
 | Add | Bottom-right **+** | Paste a URL / room ID / a whole share text; platform can be forced (Auto / Bilibili / Douyin / Douyu / Huya) |
 | Add | "识别主播" (Identify) → "确认添加" (Confirm) | **Identify first, confirm second**: the dialog shows platform, nickname, room ID and the resolved result. "返回修改" (Go back) returns to editing; nothing is written automatically |
 | System share | Share a room text from another app → choose "开播提醒" | Prefills and detects the platform, still requires your confirmation |
-| Settings | Status card | Whether the service is actually running, the effective interval, last round duration (red when it overruns), current network, last check time, followed-streamer count and quiet-hours state |
+| Settings | Status card | Whether the service is actually running, the effective interval, last round duration (red when it overruns), current network, next check time, pending alert count, last check time, followed-streamer count and quiet-hours state |
 | Settings | Polling / Notifications / Background permissions / Data / Other | Polling: interval, Wi-Fi only, confirmation count; Notifications: sound & vibration, test notification, quiet hours, hide persistent notification, channel settings; Background permissions: auto-start, battery optimisation, notification permission with shortcuts, plus the "N live alerts pending re-send" notice; Data: backup & restore, Bilibili stats, Douyin cookie; Other: check for updates |
 | Settings | Back key / back swipe | Returns to the home screen instead of leaving the app |
+| Diagnostics | "View / copy diagnostic report" / "Feedback" | Summarises background service state, next check time, pending alerts, per-platform state and recent issues; the report contains no cookie / token and can be copied or filed via GitHub Issues (it never opens a new issue for you) |
 | Other · update card | "下载并安装" (Download & install) / "以后再说" (Later) | An inline card on the Settings page (not a dialog): current vs. latest version and the full changelog, byte-level progress; "Later" remembers that version, though a manual check still shows it |
 
 Each avatar carries the official platform badge in its bottom-right corner. Live cards get a soft red highlight with a breathing outline, and relative timestamps refresh every 20 seconds.
@@ -213,7 +217,7 @@ Each avatar carries the official platform badge in its bottom-right corner. Live
 | **Huya** | `mp.huya.com/cache.php?m=Live&do=profileRoom` | ❌ 1 s throttle | ❌ Not returned; only local observation |
 
 > Douyin offers no personal-use room status API. This project parses the mobile landing page at `webcast.amemv.com` (no login, no signature, ~90 KB per request).
-> That is **unofficial page scraping**: a redesign can break it. You may paste a browser cookie in Settings to improve success rate (stored locally only).
+> That is **unofficial page scraping**: a redesign can break it. Use "Sign in & capture" in Settings to log in to Douyin inside the app and capture the cookie with one tap (encrypted on-device, never uploaded or backed up); manual paste remains a fallback.
 > Short links from `v.douyin.com` in share texts are followed automatically to that landing page — paste the whole text as-is.
 
 ---
@@ -308,7 +312,10 @@ GitHub Release assets carry a `digest` (`sha256:<hex>`). After downloading, the 
 Only platforms whose API returns a start time (Douyu, Douyin) can show it immediately. Bilibili and Huya need the app to observe one live session first.
 
 **Q: Douyin keeps saying "page structure may have changed".**
-Douyin redesigned the page. Open `https://webcast.amemv.com/douyin/webcast/reflow/<room_id>` with a mobile UA in a browser to see whether data is still available; a cookie in Settings can also help.
+Douyin redesigned the page. Open `https://webcast.amemv.com/douyin/webcast/reflow/<room_id>` with a mobile UA in a browser to see whether data is still available; or use Settings → "Sign in & capture" to log in to Douyin inside the app and capture the cookie.
+
+**Q: How do I capture the Douyin cookie in-app? Is it safe?**
+Settings → Data → Douyin cookie → "Sign in & capture": sign in to Douyin in the built-in web view, then tap "Capture & save" — no need to dig through browser developer tools. The cookie is a login credential: it is encrypted with Android Keystore AES-GCM, stored on-device only, never uploaded, backed up, or logged, and masked by default. The app sets `allowBackup=false`. It is used only to read public live-room state. The key is destroyed on uninstall, so reinstall requires capturing again. This is an unofficial web approach — a Douyin redesign or stricter anti-bot checks may break it; manual paste stays available as a fallback.
 
 **Q: Pasting a Douyin share text does not work.**
 It normally does: `v.douyin.com` short links are followed to the real room URL, and the room ID is the number in `reflow/<digits>`. If it still fails, the stream has probably ended or the short link expired — share it again from Douyin.
@@ -360,7 +367,7 @@ app/
     ├── data/
     │   ├── StreamerEntity.kt Room entity (dedup / debounce / pending-alert fields)
     │   ├── StreamerDao.kt    DAO (Flow observation + batch updates)
-    │   ├── AppDatabase.kt    Room singleton (v1→v4 incremental migrations, single MIGRATION_SQL source)
+    │   ├── AppDatabase.kt    Room singleton (v1→v8 incremental migrations, single MIGRATION_SQL source)
     │   └── SettingsRepository.kt DataStore preferences
     ├── platform/
     │   ├── LivePlatform.kt   ★ Platform abstraction (implement + register to add one)
@@ -402,6 +409,8 @@ One round: read enabled entries → group by platform → call `platform.fetch()
 1. **State transition**: only "was offline → now live" can trigger an alert;
 2. **Consecutive confirmations**: N consecutive live observations before notifying (default 1, adjustable to 2–3). Until then `isLive` stays **false**, otherwise the second round would be blocked by "already live" and 2–3 confirmations would never notify;
 3. **Session dedup + cooldown**: `lastNotifiedLiveStart` records the notified session; same session never repeats, plus a cooldown (default 10 minutes).
+4. **Reversible alert**: the live notification is cleared only after an **offline state is confirmed**; a single failed check, rate limit or Unknown result keeps the alert (no false "already offline" removal).
+5. **Network wake-up**: the service registers the system default network callback, interrupting the current wait for an immediate re-check when connectivity returns; two throttles (under 15 s since the last check, under 60 s since the last wake) prevent churn. The callback is unregistered on service destroy and coexists idempotently with the "Check now" action.
 
 ### 🚧 Edge cases
 
@@ -427,7 +436,7 @@ One round: read enabled entries → group by platform → call `platform.fetch()
 | Offline, with history | `Last live 5 days ago · 10-23 15:26` | `lastLiveStartAt` (previous session, kept forever) |
 | Offline, no history | `No live history yet` | — |
 
-`lastLiveEndAt` records the moment the engine observes a "live → offline" transition. Database v1→v4 uses only `ALTER TABLE ADD COLUMN`, so upgrading never drops the follow list; `MigrationSqlTest` runs the whole chain on real SQLite from v1 / v2 / v3 and checks every column.
+`lastLiveEndAt` records the moment the engine observes a "live → offline" transition. Database v1→v8 migrates incrementally (columns via `ALTER TABLE ADD COLUMN`; the v8 `app_logs` run-log table via `CREATE TABLE`), so upgrading never drops the follow list; `MigrationSqlTest` runs the whole chain on real SQLite from v1 / v2 / v3 / v7 and checks every column.
 
 ### 🔋 Battery and data
 
@@ -440,15 +449,17 @@ One round: read enabled entries → group by platform → call `platform.fetch()
 
 <a id="verification"></a>
 
-## 📊 Verification Log (2026-11-07)
+## 📊 Verification Log
 
 | Item | Result |
 |---|---|
-| **DB migration v1→v4 automation** | ✅ Real SQLite from three starting points, every column checked against the schema snapshot; 133 unit tests pass, lint 0 errors |
+| **DB migration v1→v8 automation** | ✅ Real SQLite from multiple starting points, every column checked against the schema snapshot; **282 unit tests pass**, lint 0 errors |
 | **Four-platform round** | ✅ 4 streamers across 4 platforms: `checked=4 notified=0 err=0` |
 | **Search / filters / Settings back** | ✅ Action sheet, immediate check, search & filters, Back-to-collapse and swipe-back all verified on device |
-| **Catch-up / in-app update** | ✅ On device: alerts re-sent after permission restored; v1.0.5 → v1.0.6 in-place upgrade with data intact |
-| **Release signing check** | ✅ CI compares SHA-256 fingerprint byte for byte; `versionCode=10011` / `versionName=1.0.11` match the tag |
+| **Catch-up / in-app update** | ✅ On device: alerts re-sent after permission restored; in-place upgrades keep data; user confirmed in-app update works |
+| **Release signing check** | ✅ CI compares the SHA-256 fingerprint byte for byte, verifies `versionName` / `versionCode` against the tag, and ships a SHA-256 checksum for the APK |
+| **Long-running device check (v1.1.3)** | ✅ Service recovers after process death, foreground service survives Doze with screen off, boots on BOOT_COMPLETED; `err=0 pending=0` throughout |
+| **Douyin in-app cookie capture (v1.1.4)** | ✅ On device: in-app sign-in & capture flow works; first screen goes straight to the login page; cookie stored encrypted, excluded from backups |
 
 ---
 
@@ -490,7 +501,7 @@ Things worth stating plainly:
 
 1. This project is for **personal reminders for streamers you follow**. Data comes from public pages / public endpoints; nothing is stored-and-forwarded, redistributed, or used for commercial analysis.
 2. The Douyin path is **unofficial page scraping**: keep request volume under control (throttled by default) and do not use it for bulk collection. A site redesign can break it — in that case disable the path or apply for official enterprise access.
-3. The Douyin cookie is **optional**, stored only in local DataStore and never uploaded; the app sets `allowBackup=false` (no system / cloud backup) and masks it by default in Settings.
+3. The Douyin cookie is **optional**, encrypted with Android Keystore AES-GCM and stored on-device only (legacy plaintext cookies are transparently migrated to encrypted on read), never uploaded; the app sets `allowBackup=false` (no system / cloud backup) and masks it by default in Settings. Treat it as a login credential — do not share screenshots; the key is destroyed on uninstall and must be re-captured after reinstall.
 4. The notification small icon is a monochrome PNG; if your ROM renders it badly, replace `drawable-*/ic_notification.png` — no code change needed.
 5. **Trademarks & icons**: `drawable-*/ic_platform_*.png` are official platform icons; trademarks belong to their owners and this project claims no rights. If you are a rights holder and object, please open an issue and I will remove them immediately. For commercial distribution, replace them with neutral icons.
 

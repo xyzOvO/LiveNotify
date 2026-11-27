@@ -128,7 +128,8 @@ class MainActivity : ComponentActivity() {
                                 go(Screen.Stats)
                             },
                             onOpenDiagnostic = { go(Screen.Diagnostic) },
-                            onOpenDetectDetail = { go(Screen.DetectDetail) }
+                            onOpenDetectDetail = { go(Screen.DetectDetail) },
+                            onOpenDouyinLogin = { go(Screen.DouyinLogin) }
                         )
                     }
                     Screen.Stats -> pageStates.SaveableStateProvider(Screen.Stats.name) {
@@ -162,6 +163,12 @@ class MainActivity : ComponentActivity() {
                             onBack = { back() }
                         )
                     }
+                    Screen.DouyinLogin -> pageStates.SaveableStateProvider(Screen.DouyinLogin.name) {
+                        DouyinLoginScreen(
+                            vm = androidx.lifecycle.viewmodel.compose.viewModel<MainViewModel>(),
+                            onBack = { back() }
+                        )
+                    }
                 }
             }
         }
@@ -179,4 +186,4 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class Screen { Main, Settings, Stats, History, GroupManage, Diagnostic, DetectDetail }
+enum class Screen { Main, Settings, Stats, History, GroupManage, Diagnostic, DetectDetail, DouyinLogin }

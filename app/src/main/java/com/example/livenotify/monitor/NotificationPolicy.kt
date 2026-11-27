@@ -49,4 +49,19 @@ object NotificationPolicy {
         retrySince > 0L -> retrySince
         else -> now
     }
+
+    /**
+     * 确认下播后是否要主动撤掉开播通知。
+     *
+     * 只有「上一状态在播 + 本轮确认不在播 + 确实发过通知」三件同时成立才撤：
+     * - 单次失败 / Unknown 时 confirmedLive 仍为 true，不会误撤正在播的通知；
+     * - 从没发过通知（种子为 0）时没有可撤的条目。
+     *
+     * 纯函数，便于 JVM 单测锁边界。
+     */
+    fun shouldCancelLiveNotification(
+        wasLive: Boolean,
+        confirmedLive: Boolean,
+        lastNotifiedSeed: Long
+    ): Boolean = wasLive && !confirmedLive && lastNotifiedSeed > 0L
 }
