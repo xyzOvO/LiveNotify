@@ -56,4 +56,15 @@ class DouyinCookieCaptureTest {
         assertNull(CookieVaultFormat.unpack("AESGCM1:bad"))
         assertNull(CookieVaultFormat.unpack("AESGCM1:!!!not-base64!!!:also!!!"))
     }
+
+    @Test
+    fun `保存提示按清空 成功 加密失败三分支`() {
+        assertEquals("已清空 Cookie", DouyinCookieCapture.saveMessage(inputBlank = true, saved = true))
+        assertEquals("Cookie 已保存到本机", DouyinCookieCapture.saveMessage(inputBlank = false, saved = true))
+        // Bug2 回归：加密失败必须明说没保存，不能报「已保存」误导用户
+        assertEquals(
+            "Cookie 加密失败，未保存（旧 Cookie 已保留）",
+            DouyinCookieCapture.saveMessage(inputBlank = false, saved = false)
+        )
+    }
 }

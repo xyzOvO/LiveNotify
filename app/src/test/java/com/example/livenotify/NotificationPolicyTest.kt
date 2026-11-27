@@ -95,6 +95,31 @@ class NotificationPolicyTest {
     }
 
     @Test
+    fun `虎牙开播时刻为零 兜底种子大于零时撤销条件成立`() {
+        // Bug1 回归：虎牙 liveStartAt=0 → sessionKey=0。通知用兜底种子( now )能响铃，
+        // 但旧实现把 sessionKey=0 落库，撤销时 lastNotifiedSeed=0 → 撤不掉。
+        // 修复后落库用 notifySeed（兜底后 >0），shouldCancel 三条件成立。
+        val sessionKey = 0L
+        val now = 1_800_000_999L
+        val seeded = NotificationPolicy.notifySeed(
+            sessionKey = sessionKey, retrySince = 0L, now = now
+        )
+        assertTrue("兜底种子必须 >0", seeded > 0L)
+        assertTrue(
+            "落库兜底种子后确认下播应撤通知",
+            NotificationPolicy.shouldCancelLiveNotification(
+                wasLive = true, confirmedLive = false, lastNotifiedSeed = seeded
+            )
+        )
+        // 旧落库值 0 依然撤不掉——锁死「必须落兜底种子而非 sessionKey」这条
+        org.junit.Assert.assertFalse(
+            NotificationPolicy.shouldCancelLiveNotification(
+                wasLive = true, confirmedLive = false, lastNotifiedSeed = sessionKey
+            )
+        )
+    }
+
+    @Test
     fun `连续测试通知使用不同 id`() {
         val first = NotificationPolicy.testNotificationId(1_700_000_000L)
         val second = NotificationPolicy.testNotificationId(1_700_000_001L)

@@ -50,4 +50,14 @@ object DouyinCookieCapture {
         val idx = part.indexOf('=')
         idx > 0 && part.substring(0, idx).trim().isNotEmpty()
     }
+
+    /**
+     * Cookie 保存后的提示文案。加密失败（saved=false）时必须明说没保存，
+     * 不能沿用「已保存」误导用户以为凭据已经安全落盘。
+     */
+    fun saveMessage(inputBlank: Boolean, saved: Boolean): String = when {
+        inputBlank -> "已清空 Cookie"
+        saved -> "Cookie 已保存到本机"
+        else -> "Cookie 加密失败，未保存（旧 Cookie 已保留）"
+    }
 }

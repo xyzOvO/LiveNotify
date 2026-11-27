@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.livenotify.util.BackupFormat
+import com.example.livenotify.util.DouyinCookieCapture
 import com.example.livenotify.util.ShareText
 import com.example.livenotify.Graph
 import com.example.livenotify.R
@@ -227,6 +228,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         EasterEggs.find(fresh.platformId, fresh.anchorId, fresh.displayId)?.let { hit ->
             _egg.value = hit.copy(nickname = fresh.nickname)
         }
+        // 监控关闭时上面没走 refresh，这里补一次让桌面小组件仍跟上（读库已是最新）
+        if (!monitoring) WidgetUpdater.requestRefresh(getApplication())
         return AddResult.Success(fresh.nickname)
     }
 
@@ -865,8 +868,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setDouyinCookie(c: String) = viewModelScope.launch {
-        Graph.settings.setDouyinCookie(c)
-        _toast.value = if (c.isBlank()) "已清空 Cookie" else "Cookie 已保存到本机"
+        val saved = Graph.settings.setDouyinCookie(c)
+        _toast.value = DouyinCookieCapture.saveMessage(inputBlank = c.isBlank(), saved = saved)
     }
 
     /**

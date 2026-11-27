@@ -326,7 +326,10 @@ class MonitorEngine(
                             ) {
                                 updated = updated.copy(
                                     lastNotifiedAt = now,
-                                    lastNotifiedLiveStart = sessionKey
+                                    // 落库必须用兜底后的实际种子：虎牙 liveStartAt=0 → sessionKey=0，
+                                    // 若落 0，撤销通知时反推 id 的种子恒为 0，永远撤不掉。
+                                    // B站/斗鱼/抖音 sessionKey>0，notifySeed==sessionKey，行为不变。
+                                    lastNotifiedLiveStart = notifySeed
                                 )
                                 notified++
                                 notifySent = true

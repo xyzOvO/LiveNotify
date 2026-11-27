@@ -117,6 +117,7 @@ To add a streamer: tap **+** at the bottom right and paste a room URL or a room 
 | **Pause / resume** | A paused card stays in the list but is not polled or notified; resuming aligns with the current session so an ongoing stream is not reported as new |
 | **Backup & restore** | Export / import JSON to a local file for a new phone or a reinstall; cookies, live state and cooldowns are deliberately excluded. Import shows a preview ("N added / M skipped — already present") before writing, then writes streamers and settings as one unit — any failure rolls everything back and never overwrites existing notes or pause states |
 | **Fully local** | No account, no server, no analytics. Everything lives in a local Room database |
+| **Home-screen widget** | See who's live right on your home screen: circular avatar + nickname + stream title + platform icon, in a dark "live marquee" style. Compact / expanded sizes, both resizable horizontally and vertically (2 vs. 4 streamers); tap a streamer to open their room, empty state when nobody is live. Refreshes with each polling round — no second polling loop; offline / waiting-for-Wi-Fi / stale states are shown honestly |
 
 ### 📊 Data, Updates & Reliability
 
@@ -159,6 +160,17 @@ The cover screenshot reads top-to-bottom as follows. **One streamer per platform
 | **Huya** | 骚男 | `520520` | ⚪ Offline |
 
 Every card shows the avatar (with a platform badge in the bottom-right corner), nickname, platform and room ID, stream title (the previous stream's title while offline), live-time line and a state badge. While live, the whole card gets a soft red highlight and shows "Live for N h N m"; when offline it shows "Last live…" or "No live history yet".
+
+### 🏠 Home-screen Widget
+
+Long-press the home screen → Widgets → "开播提醒" to place the live list on your desktop. Dark "live marquee" style: deep ink background, coral-red count pill, circular avatars with a LIVE dot, warm-white text.
+
+| Size | What it shows |
+|---|---|
+| Compact (default) | Top line "monitor status + N/M live", up to 2 live streamers (avatar / nickname / title / platform icon); overflow shows "N more live" |
+| Expanded | Same layout, up to 4 streamers |
+
+Tap a streamer to open their live room; tap the blank area to open the app. Status is honest: service off, no network, waiting for Wi-Fi, or a stale last check are all spelled out — never a fake "all good". The widget refreshes with each polling round at no extra battery cost.
 
 ### 👆 Interaction Map
 
@@ -453,13 +465,15 @@ One round: read enabled entries → group by platform → call `platform.fetch()
 
 | Item | Result |
 |---|---|
-| **DB migration v1→v8 automation** | ✅ Real SQLite from multiple starting points, every column checked against the schema snapshot; **282 unit tests pass**, lint 0 errors |
+| **DB migration v1→v8 automation** | ✅ Real SQLite from multiple starting points, every column checked against the schema snapshot; **292 unit tests pass**, lint 0 errors |
 | **Four-platform round** | ✅ 4 streamers across 4 platforms: `checked=4 notified=0 err=0` |
 | **Search / filters / Settings back** | ✅ Action sheet, immediate check, search & filters, Back-to-collapse and swipe-back all verified on device |
 | **Catch-up / in-app update** | ✅ On device: alerts re-sent after permission restored; in-place upgrades keep data; user confirmed in-app update works |
 | **Release signing check** | ✅ CI compares the SHA-256 fingerprint byte for byte, verifies `versionName` / `versionCode` against the tag, and ships a SHA-256 checksum for the APK |
 | **Long-running device check (v1.1.3)** | ✅ Service recovers after process death, foreground service survives Doze with screen off, boots on BOOT_COMPLETED; `err=0 pending=0` throughout |
 | **Douyin in-app cookie capture (v1.1.4)** | ✅ On device: in-app sign-in & capture flow works; first screen goes straight to the login page; cookie stored encrypted, excluded from backups |
+| **Home-screen widget (v1.1.5)** | ✅ On device: dark "live marquee" version renders correctly (`3/11 live` + streamer avatars/nicknames/titles), resizes horizontally & vertically, tapping an avatar opens the room; both the cold-start blank issue and the RemoteViews inflate issue were fixed and re-verified |
+| **Huya alert clear / cookie save (v1.1.5)** | ✅ Huya alerts are now cleared on confirmed offline even when the stream-start time is zero; cookie encryption failures are reported honestly with the old value preserved; regression tests lock down both edges |
 
 ---
 

@@ -179,6 +179,8 @@ class MonitorService : Service() {
                     }
                     val report = engine.runOnce()
                     updateForeground(report)
+                    // 每轮检测完让桌面小组件跟上在播状态变化（内部异步、数据没变不重建）
+                    com.example.livenotify.ui.WidgetUpdater.requestRefresh(applicationContext)
                     consecutiveFailures = 0 // 跑通一轮（含 skip）就重置退避
                     val period = engine.nextDelayMs()
                     val now = System.currentTimeMillis()
@@ -355,11 +357,14 @@ class MonitorService : Service() {
                     Intent(context, MonitorService::class.java).setAction(ACTION_REFRESH)
                 )
             }.onFailure { Log.w(TAG, "refresh failed: ${it.message}") }
+            // 关注列表变化也要让桌面小组件跟上（即使监控没开）
+            com.example.livenotify.ui.WidgetUpdater.requestRefresh(context)
         }
 
         /** 服务活着才刷新；监控已关闭时不要把它拉起来 */
         fun refreshIfRunning(context: Context) {
             if (isRunning) refresh(context)
+            else com.example.livenotify.ui.WidgetUpdater.requestRefresh(context)
         }
 
         /**

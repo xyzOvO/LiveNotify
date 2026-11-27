@@ -25,4 +25,7 @@ object Graph {
         settings = SettingsRepository(context)
         engine = MonitorEngine(context, db, settings)
     }
+
+    /** 依赖是否已注入完成。桌面小组件在冷启动时可能早于 Application.onCreate 被回调 */
+    fun isReady(): Boolean = this::db.isInitialized && this::settings.isInitialized
 }

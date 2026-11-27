@@ -7,4 +7,10 @@
     <string name="monitor_channel_name">后台检测</string>
     <string name="monitor_channel_desc">常驻通知，用于保持开播检测运行</string>
     <string name="monitor_channel_desc_hidden">开启「隐藏常驻通知」后使用该渠道，保持检测的同时尽量不打扰</string>
+
+    <!-- 桌面小组件 -->
+    <string name="widget_description">关注主播的开播状态，点条目直达直播间</string>
+    <string name="widget_empty">暂无主播正在直播</string>
+    <string name="widget_open_app">查看全部</string>
+    <string name="widget_status_icon">●</string>
 </resources>
