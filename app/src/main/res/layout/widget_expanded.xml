@@ -15,6 +15,15 @@
         android:gravity="center_vertical">
 
         <TextView
+            android:id="@+id/widget_header_dot"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="5dp"
+            android:text="●"
+            android:textSize="10sp"
+            android:textColor="#F2EFF7"
+            android:maxLines="1" />
+        <TextView
             android:id="@+id/widget_header_status"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -76,6 +85,7 @@
                 android:contentDescription="@string/widget_description" />
 
             <ImageView
+                android:id="@+id/widget_item1_live_dot"
                 android:layout_width="8dp"
                 android:layout_height="8dp"
                 android:layout_gravity="bottom|end"
@@ -117,6 +127,17 @@
             android:layout_width="14dp"
             android:layout_height="14dp"
             android:contentDescription="@string/widget_description" />
+
+        <TextView
+            android:id="@+id/widget_item1_arrow"
+            android:layout_width="14dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="2dp"
+            android:gravity="center"
+            android:text="›"
+            android:textSize="18sp"
+            android:textColor="#8C86A0"
+            android:maxLines="1" />
     </LinearLayout>
 
     <!-- 条目 2 -->
@@ -142,6 +163,7 @@
                 android:contentDescription="@string/widget_description" />
 
             <ImageView
+                android:id="@+id/widget_item2_live_dot"
                 android:layout_width="8dp"
                 android:layout_height="8dp"
                 android:layout_gravity="bottom|end"
@@ -183,6 +205,17 @@
             android:layout_width="14dp"
             android:layout_height="14dp"
             android:contentDescription="@string/widget_description" />
+
+        <TextView
+            android:id="@+id/widget_item2_arrow"
+            android:layout_width="14dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="2dp"
+            android:gravity="center"
+            android:text="›"
+            android:textSize="18sp"
+            android:textColor="#8C86A0"
+            android:maxLines="1" />
     </LinearLayout>
 
     <!-- 条目 3 -->
@@ -208,6 +241,7 @@
                 android:contentDescription="@string/widget_description" />
 
             <ImageView
+                android:id="@+id/widget_item3_live_dot"
                 android:layout_width="8dp"
                 android:layout_height="8dp"
                 android:layout_gravity="bottom|end"
@@ -249,6 +283,17 @@
             android:layout_width="14dp"
             android:layout_height="14dp"
             android:contentDescription="@string/widget_description" />
+
+        <TextView
+            android:id="@+id/widget_item3_arrow"
+            android:layout_width="14dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="2dp"
+            android:gravity="center"
+            android:text="›"
+            android:textSize="18sp"
+            android:textColor="#8C86A0"
+            android:maxLines="1" />
     </LinearLayout>
 
     <!-- 条目 4 -->
@@ -274,6 +319,7 @@
                 android:contentDescription="@string/widget_description" />
 
             <ImageView
+                android:id="@+id/widget_item4_live_dot"
                 android:layout_width="8dp"
                 android:layout_height="8dp"
                 android:layout_gravity="bottom|end"
@@ -315,6 +361,173 @@
             android:layout_width="14dp"
             android:layout_height="14dp"
             android:contentDescription="@string/widget_description" />
+
+        <TextView
+            android:id="@+id/widget_item4_arrow"
+            android:layout_width="14dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="2dp"
+            android:gravity="center"
+            android:text="›"
+            android:textSize="18sp"
+            android:textColor="#8C86A0"
+            android:maxLines="1" />
+    </LinearLayout>
+
+    <!-- 条目 5 -->
+    <LinearLayout
+        android:id="@+id/widget_item5"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="6dp"
+        android:visibility="gone">
+
+        <FrameLayout
+            android:layout_width="28dp"
+            android:layout_height="28dp">
+
+            <ImageView
+                android:id="@+id/widget_item5_avatar"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/widget_avatar_bg"
+                android:scaleType="centerCrop"
+                android:contentDescription="@string/widget_description" />
+
+            <ImageView
+                android:id="@+id/widget_item5_live_dot"
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:layout_gravity="bottom|end"
+                android:background="@drawable/widget_live_dot"
+                android:contentDescription="@string/widget_description" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:layout_marginStart="8dp">
+
+            <TextView
+                android:id="@+id/widget_item5_name"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="#F2EFF7"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="" />
+
+            <TextView
+                android:id="@+id/widget_item5_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="10sp"
+                android:textColor="#A9A3B8"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="" />
+        </LinearLayout>
+
+        <ImageView
+            android:id="@+id/widget_item5_platform"
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:contentDescription="@string/widget_description" />
+
+        <TextView
+            android:id="@+id/widget_item5_arrow"
+            android:layout_width="14dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="2dp"
+            android:gravity="center"
+            android:text="›"
+            android:textSize="18sp"
+            android:textColor="#8C86A0"
+            android:maxLines="1" />
+    </LinearLayout>
+
+    <!-- 条目 6 -->
+    <LinearLayout
+        android:id="@+id/widget_item6"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="6dp"
+        android:visibility="gone">
+
+        <FrameLayout
+            android:layout_width="28dp"
+            android:layout_height="28dp">
+
+            <ImageView
+                android:id="@+id/widget_item6_avatar"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/widget_avatar_bg"
+                android:scaleType="centerCrop"
+                android:contentDescription="@string/widget_description" />
+
+            <ImageView
+                android:id="@+id/widget_item6_live_dot"
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:layout_gravity="bottom|end"
+                android:background="@drawable/widget_live_dot"
+                android:contentDescription="@string/widget_description" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:layout_marginStart="8dp">
+
+            <TextView
+                android:id="@+id/widget_item6_name"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="#F2EFF7"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="" />
+
+            <TextView
+                android:id="@+id/widget_item6_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="10sp"
+                android:textColor="#A9A3B8"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="" />
+        </LinearLayout>
+
+        <ImageView
+            android:id="@+id/widget_item6_platform"
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:contentDescription="@string/widget_description" />
+
+        <TextView
+            android:id="@+id/widget_item6_arrow"
+            android:layout_width="14dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="2dp"
+            android:gravity="center"
+            android:text="›"
+            android:textSize="18sp"
+            android:textColor="#8C86A0"
+            android:maxLines="1" />
     </LinearLayout>
 
     <TextView

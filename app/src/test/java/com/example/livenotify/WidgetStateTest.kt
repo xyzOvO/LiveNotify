@@ -86,6 +86,27 @@ class WidgetStateTest {
     }
 
     @Test
+    fun 动态可见条数按高度计算() {
+        // 没有在播主播 → 0
+        assertEquals(0, WidgetState.visibleItemCount(400, 0, WidgetLayout.EXPANDED))
+        // 紧凑档固定 2，且不超过在播数
+        assertEquals(2, WidgetState.visibleItemCount(200, 5, WidgetLayout.COMPACT))
+        assertEquals(1, WidgetState.visibleItemCount(200, 1, WidgetLayout.COMPACT))
+        // 展开档：每条约 36dp、头部 44 + 溢出预留 16
+        // 高度 152 → (152-44-16)/36 = 2 条；188 → 3；224 → 4；296 → 6
+        assertEquals(2, WidgetState.visibleItemCount(152, 5, WidgetLayout.EXPANDED))
+        assertEquals(3, WidgetState.visibleItemCount(188, 5, WidgetLayout.EXPANDED))
+        assertEquals(4, WidgetState.visibleItemCount(224, 5, WidgetLayout.EXPANDED))
+        assertEquals(6, WidgetState.visibleItemCount(296, 10, WidgetLayout.EXPANDED))
+        // 不超过在播数（只有 3 位在播，即使拉很高也只显示 3）
+        assertEquals(3, WidgetState.visibleItemCount(500, 3, WidgetLayout.EXPANDED))
+        // 不超过布局上限 6（在播 10 位，拉到顶也只显示 6）
+        assertEquals(6, WidgetState.visibleItemCount(500, 10, WidgetLayout.EXPANDED))
+        // 高度太小保底 2 条
+        assertEquals(2, WidgetState.visibleItemCount(110, 5, WidgetLayout.EXPANDED))
+    }
+
+    @Test
     fun 溢出提示() {
         assertNull(WidgetState.overflowText(2, 2))
         assertNull(WidgetState.overflowText(1, 2))
@@ -163,5 +184,32 @@ class WidgetStateTest {
         WidgetStatus.values().forEach { status ->
             assertTrue(WidgetState.statusText(status).isNotBlank())
         }
+    }
+
+    @Test
+    fun 状态颜色六态齐全且异常色不同于正常色() {
+        val normal = WidgetState.statusTint(WidgetStatus.NORMAL)
+        assertEquals(7, normal.length) // #RRGGBB
+        assertTrue(normal.startsWith("#"))
+        WidgetStatus.values().forEach { status ->
+            val tint = WidgetState.statusTint(status)
+            assertEquals(7, tint.length)
+            assertTrue(tint.startsWith("#"))
+        }
+        // 三种「没在查/查不到」的状态必须一眼和正常区分开
+        assertFalse(WidgetState.statusTint(WidgetStatus.NOT_RUNNING) == normal)
+        assertFalse(WidgetState.statusTint(WidgetStatus.WAIT_NETWORK) == normal)
+        assertFalse(WidgetState.statusTint(WidgetStatus.STALE) == normal)
+    }
+
+    @Test
+    fun 空状态文案不说谎() {
+        assertEquals("暂无主播正在直播", WidgetState.emptyText(WidgetStatus.NORMAL, 5))
+        assertEquals("还没有关注主播", WidgetState.emptyText(WidgetStatus.NORMAL, 0))
+        assertTrue(WidgetState.emptyText(WidgetStatus.NOT_RUNNING, 5).contains("未开启"))
+        assertTrue(WidgetState.emptyText(WidgetStatus.WAIT_NETWORK, 5).contains("网络"))
+        assertTrue(WidgetState.emptyText(WidgetStatus.WAIT_WIFI, 5).contains("Wi-Fi"))
+        assertTrue(WidgetState.emptyText(WidgetStatus.FETCHING, 5).contains("正在获取"))
+        assertTrue(WidgetState.emptyText(WidgetStatus.STALE, 5).contains("过期"))
     }
 }

@@ -29,10 +29,10 @@ enum class WidgetStatus {
     STALE,           // 数据可能已过期
 }
 
-/** 两种布局：紧凑（最多 2 位）与展开（最多 4 位） */
+/** 两种布局：紧凑（最多 2 位）与展开（最多 6 位，按实际高度用其中几条） */
 enum class WidgetLayout(val maxItems: Int) {
     COMPACT(2),
-    EXPANDED(4),
+    EXPANDED(6),
 }
 
 /** 一份完整的小组件快照，由主进程从 Room + 服务状态汇总 */
@@ -69,6 +69,20 @@ internal object WidgetState {
     fun pickLayout(widthDp: Int, heightDp: Int): WidgetLayout = when {
         widthDp < 160 || heightDp < 110 -> WidgetLayout.COMPACT
         else -> WidgetLayout.EXPANDED
+    }
+
+    /**
+     * 展开布局里这一刻能放几条。RemoteViews 只能用写死的槽位，做不到真·动态列表，
+     * 但可以按高度动态决定"这次显示几条"——拉高一格多冒一条。
+     * 每条约 36dp（头像 28 + 上下间距 6 + 余量），头部+胶囊约 44dp，底部溢出提示预留 16dp。
+     */
+    fun visibleItemCount(heightDp: Int, liveCount: Int, layout: WidgetLayout): Int {
+        if (liveCount <= 0) return 0
+        val capacity = when (layout) {
+            WidgetLayout.COMPACT -> 2
+            WidgetLayout.EXPANDED -> ((heightDp - 44 - 16) / 36).coerceAtLeast(2)
+        }
+        return capacity.coerceAtMost(layout.maxItems).coerceAtMost(liveCount)
     }
 
     /** 超出可显示条数时的提示：还有 N 位正在直播 */
@@ -138,5 +152,23 @@ internal object WidgetState {
         WidgetStatus.WAIT_WIFI -> "等待 Wi-Fi"
         WidgetStatus.FETCHING -> "正在获取直播状态"
         WidgetStatus.STALE -> "数据可能已过期"
+    }
+
+    /**
+     * 状态行的深色配色。保持旧签名兼容，实际逻辑在 [WidgetPalette]（浅色/深色各一套）。
+     */
+    fun statusTint(status: WidgetStatus): String = WidgetPalette.statusTint(status, dark = true)
+
+    /**
+     * 空状态文案按状态走：过去无论监控没开、断网、还没检测都写「暂无主播正在直播」，
+     * 会让用户误以为查过了真没人播。现在明确说出为什么是空的。
+     */
+    fun emptyText(status: WidgetStatus, total: Int): String = when (status) {
+        WidgetStatus.NORMAL -> if (total == 0) "还没有关注主播" else "暂无主播正在直播"
+        WidgetStatus.NOT_RUNNING -> "监控未开启，开启后才会检测"
+        WidgetStatus.WAIT_NETWORK -> "等待网络连接后开始检测"
+        WidgetStatus.WAIT_WIFI -> "当前非 Wi-Fi，等待连接 Wi-Fi"
+        WidgetStatus.FETCHING -> "正在获取直播状态…"
+        WidgetStatus.STALE -> "数据可能已过期，检查下网络"
     }
 }

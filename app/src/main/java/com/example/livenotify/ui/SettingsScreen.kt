@@ -83,12 +83,14 @@ import com.example.livenotify.monitor.NetworkState
 import com.example.livenotify.monitor.NotificationHelper
 import com.example.livenotify.monitor.PendingNotify
 import com.example.livenotify.monitor.PollSchedule
+import com.example.livenotify.monitor.WidgetPinHint
 import com.example.livenotify.platform.PlatformRegistry
 import com.example.livenotify.update.ApkInstaller
 import com.example.livenotify.update.ReleaseNotes
 import com.example.livenotify.update.UpdateApi
 import com.example.livenotify.util.AutoStartHelper
 import com.example.livenotify.util.BackupFormat
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -128,6 +130,8 @@ fun SettingsScreen(
     val toast by vm.toast.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var showPinGuide by remember { mutableStateOf(false) }
 
     // 从系统设置页返回时，权限 / 电池优化状态可能已经变了，进页面重读一次
     var resumeTick by remember { mutableIntStateOf(0) }
@@ -514,6 +518,40 @@ fun SettingsScreen(
             }
 
             item { GroupTitle("其他") }
+            // 桌面小组件入口：系统一键添加（requestPinAppWidget），不支持的桌面给手动路径
+            item {
+                SettingsCard {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Text("桌面小组件", style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(2.dp))
+                        val pinnedCount = remember(resumeTick) { WidgetPin.pinnedCount(context) }
+                        val pinSupported = remember { WidgetPin.supported(context) }
+                        Text(
+                            WidgetPinHint.text(pinSupported, pinnedCount) + "；外观跟随下面的主题设置",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                val before = WidgetPin.pinnedCount(context)
+                                val ok = WidgetPin.request(context)
+                                if (!ok) {
+                                    vm.notify("当前桌面不支持一键添加，请长按桌面空白处添加")
+                                } else {
+                                    // 部分国产桌面（如 MIUI）上报支持、API 也返回成功，
+                                    // 实际却不进入添加模式。等一小会儿复查是否真的加上了，
+                                    // 没加上才弹手动引导，不拿假的「已发起添加」骗用户。
+                                    scope.launch {
+                                        delay(2_000)
+                                        if (WidgetPin.pinnedCount(context) <= before) showPinGuide = true
+                                    }
+                                }
+                            }
+                        ) { Text("添加到桌面") }
+                    }
+                }
+            }
             // 主题三态：设备外观偏好独立于关注列表备份，不进 Settings/备份格式
             item {
                 SettingsCard {
@@ -525,7 +563,11 @@ fun SettingsScreen(
                             ThemeMode.entries.forEach { mode ->
                                 FilterChip(
                                     selected = themeMode == mode,
-                                    onClick = { ThemePrefs.set(mode) },
+                                    onClick = {
+                                        ThemePrefs.set(mode)
+                                        // 小组件不能读 Compose 主题，切完立即让它重绘套色
+                                        WidgetUpdater.requestRefresh(context, force = true)
+                                    },
                                     label = { Text(
                                         when (mode) {
                                             ThemeMode.SYSTEM -> "跟随系统"
@@ -619,6 +661,20 @@ fun SettingsScreen(
             item { AboutCard(context) }
             item { Spacer(Modifier.height(32.dp)) }
         }
+    }
+
+    // 一键添加被桌面「假受理」时的兜底引导：给出手动三步路径，不糊弄用户
+    if (showPinGuide) {
+        AlertDialog(
+            onDismissRequest = { showPinGuide = false },
+            title = { Text("没能自动添加到桌面") },
+            text = {
+                Text("当前桌面没有响应一键添加。请手动操作：\n1. 回到桌面，长按空白处\n2. 选择「小组件」\n3. 找到「开播提醒」，拖到桌面即可")
+            },
+            confirmButton = {
+                TextButton(onClick = { showPinGuide = false }) { Text("知道了") }
+            }
+        )
     }
 }
 

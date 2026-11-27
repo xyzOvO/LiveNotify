@@ -140,6 +140,20 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info" />
         </receiver>
+
+        <!-- 可滚动小组件的数据源：RemoteViewsService 必须声明 BIND_REMOTEVIEWS 权限 -->
+        <service
+            android:name=".ui.WidgetListService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+
+        <!-- 集合条目点击中转：显式 Activity 承载 mutable template，无界面转完即走 -->
+        <activity
+            android:name=".ui.WidgetOpenActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:noHistory="true"
+            android:excludeFromRecents="true" />
     </application>
 
 </manifest>

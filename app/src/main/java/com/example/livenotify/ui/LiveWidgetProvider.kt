@@ -26,8 +26,8 @@ class LiveWidgetProvider : AppWidgetProvider() {
         newOptions: Bundle?,
     ) {
         super.onAppWidgetOptionsChanged(context, appWidgetManager, appWidgetId, newOptions)
-        // 用户横竖拖动改尺寸后重新按新尺寸选布局
-        WidgetUpdater.requestRefresh(context)
+        // 用户横竖拖动改尺寸后重新按新尺寸选布局；force 绕过判重（数据没变的 10min 窗口内也要重绘）
+        WidgetUpdater.requestRefresh(context, force = true)
     }
 
     override fun onReceive(context: Context, intent: Intent) {
