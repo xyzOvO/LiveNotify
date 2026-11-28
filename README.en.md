@@ -467,7 +467,7 @@ One round: read enabled entries → group by platform → call `platform.fetch()
 
 | Item | Result |
 |---|---|
-| **DB migration v1→v8 automation** | ✅ Real SQLite from multiple starting points, every column checked against the schema snapshot; **302 unit tests pass**, lint 0 errors |
+| **DB migration v1→v8 automation** | ✅ Real SQLite from multiple starting points, every column checked against the schema snapshot; **312 unit tests pass**, lint 0 errors |
 | **Four-platform round** | ✅ 4 streamers across 4 platforms: `checked=4 notified=0 err=0` |
 | **Search / filters / Settings back** | ✅ Action sheet, immediate check, search & filters, Back-to-collapse and swipe-back all verified on device |
 | **Catch-up / in-app update** | ✅ On device: alerts re-sent after permission restored; in-place upgrades keep data; user confirmed in-app update works |
@@ -476,6 +476,7 @@ One round: read enabled entries → group by platform → call `platform.fetch()
 | **Douyin in-app cookie capture (v1.1.4)** | ✅ On device: in-app sign-in & capture flow works; first screen goes straight to the login page; cookie stored encrypted, excluded from backups |
 | **Home-screen widget (v1.1.5)** | ✅ On device: dark "live marquee" version renders correctly (`3/11 live` + streamer avatars/nicknames/titles), resizes horizontally & vertically, tapping an avatar opens the room; both the cold-start blank issue and the RemoteViews inflate issue were fixed and re-verified |
 | **Widget enhancements (v1.1.6)** | ✅ On device: stretching the widget reveals streamers 5 and 6 automatically and the list scrolls to show every live streamer; the overflow hint follows the visible row count; on MIUI, where one-tap pinning is falsely reported as supported, a manual three-step guide appears after 2 seconds (`dumpsys appwidget` confirms no instance was created); light / dark theme switches apply instantly; the "normal" status dot and label are both green while the other five states keep their own colours |
+| **Widget avatar cache (v1.1.8)** | ✅ Fixed a cache unit mismatch: capacity and `sizeOf` now both use bytes, so the 2.25 MB budget holds ~64 avatars (previously KB units capped it at ~1.7, causing repeated re-downloads); avatar downloads gained four guards — HTTP status, Content-Length, actual read limit and decode dimensions; 4 pure-function unit tests lock these boundaries. On-device cache reuse was not verified in this version |
 | **Huya alert clear / cookie save (v1.1.5)** | ✅ Huya alerts are now cleared on confirmed offline even when the stream-start time is zero; cookie encryption failures are reported honestly with the old value preserved; regression tests lock down both edges |
 
 ---

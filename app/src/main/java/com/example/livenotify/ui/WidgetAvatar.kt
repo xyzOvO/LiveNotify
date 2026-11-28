@@ -8,9 +8,11 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Shader
 import android.util.LruCache
+import com.example.livenotify.monitor.WidgetAvatarPolicy
 import com.example.livenotify.monitor.WidgetPalette
 import com.example.livenotify.net.Http
 import okhttp3.Request
+import okio.Buffer
 
 /**
  * 小组件头像：下载 → 采样 → 裁圆描边，带内存缓存。
@@ -20,9 +22,9 @@ import okhttp3.Request
  * 缓存 key 带明暗——描边色随主题变，切主题后不能命中旧图。
  */
 internal object WidgetAvatar {
-    /** 96×96 ARGB ≈ 36KB/张，64 张约 2.3MB，控制 Parcel 大小 */
-    private val cache = object : LruCache<String, Bitmap>(64) {
-        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
+    /** 容量与 sizeOf 必须用同一口径（字节）：2.25MB 预算 ≈ 64 张 96×96 头像。 */
+    private val cache = object : LruCache<String, Bitmap>(WidgetAvatarPolicy.CACHE_MAX_BYTES) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
     fun get(url: String?, dark: Boolean): Bitmap? {
@@ -31,10 +33,24 @@ internal object WidgetAvatar {
         cache.get(key)?.let { return it }
         return try {
             val bytes = Http.client.newCall(Request.Builder().url(url).build()).execute().use { resp ->
-                resp.body?.bytes() ?: return null
+                if (!WidgetAvatarPolicy.acceptResponse(resp.code, resp.body?.contentLength() ?: -1L)) return null
+                val body = resp.body ?: return null
+                body.source().use { source ->
+                    val buf = Buffer()
+                    var total = 0L
+                    // 实际读取也设上限，不能只信 Content-Length（可能谎报或分块无限流）。
+                    while (WidgetAvatarPolicy.withinReadLimit(total)) {
+                        val read = source.read(buf, WidgetAvatarPolicy.MAX_DOWNLOAD_BYTES + 1 - total)
+                        if (read <= 0L) break
+                        total += read
+                    }
+                    if (!WidgetAvatarPolicy.withinReadLimit(total)) return null
+                    buf.readByteArray()
+                }
             }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (!WidgetAvatarPolicy.reasonableSize(bounds.outWidth, bounds.outHeight)) return null
             var sample = 1
             while (bounds.outWidth / sample > 96 || bounds.outHeight / sample > 96) sample *= 2
             val bmp = BitmapFactory.decodeByteArray(
