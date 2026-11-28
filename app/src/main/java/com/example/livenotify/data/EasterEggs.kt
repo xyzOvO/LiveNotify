@@ -51,13 +51,38 @@ object EasterEggs {
         "${it.platformId}:${it.id.trim()}" to Egg(it.platformId, it.nickname, it.text)
     }
 
+    /** 昵称索引：易变标识（如抖音 web_rid）对不上时的兜底 */
+    private val BY_NICKNAME: Map<String, Egg> = ENTRIES.associate {
+        "${it.platformId}:${normalizeName(it.nickname)}" to Egg(it.platformId, it.nickname, it.text)
+    }
+
+    /** 昵称归一化：去首尾空白并转小写 */
+    internal fun normalizeName(name: String): String = name.trim().lowercase()
+
     /**
-     * 按 平台 + 标识 查配置。先按 anchorId（uid / web_rid）匹配，再退到 displayId（房间号），
-     * 这样无论用户是用主键还是房间号添加的，都能命中同一条。
+     * 纯匹配逻辑：先按 anchorId（uid / web_rid）、再按 displayId（房间号），
+     * 都对不上最后按昵称兜底。索引由调用方传入，便于用虚构数据单测。
      */
-    fun find(platformId: String, anchorId: String, displayId: String): Egg? =
-        BY_KEY["$platformId:${anchorId.trim()}"]
-            ?: BY_DISPLAY["$platformId:${displayId.trim()}"]
+    internal fun resolve(
+        byKey: Map<String, Egg>,
+        byDisplay: Map<String, Egg>,
+        byNickname: Map<String, Egg>,
+        platformId: String,
+        anchorId: String,
+        displayId: String,
+        nickname: String
+    ): Egg? =
+        byKey["$platformId:${anchorId.trim()}"]
+            ?: byDisplay["$platformId:${displayId.trim()}"]
+            ?: nickname.takeIf { it.isNotBlank() }
+                ?.let { byNickname["$platformId:${normalizeName(it)}"] }
+
+    /**
+     * 按 平台 + 标识 查配置。昵称兜底只在标识都对不上、且传入非空昵称时生效；
+     * 只有用户主动添加的主播才会走到这里，误伤极小。
+     */
+    fun find(platformId: String, anchorId: String, displayId: String, nickname: String = ""): Egg? =
+        resolve(BY_KEY, BY_DISPLAY, BY_NICKNAME, platformId, anchorId, displayId, nickname)
 
     /** 供设置/关于页展示已配置数量 */
     fun count(): Int = ENTRIES.size

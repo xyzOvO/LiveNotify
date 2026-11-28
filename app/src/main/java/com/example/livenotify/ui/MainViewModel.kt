@@ -225,7 +225,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _toast.value = if (monitoring) "已关注 ${fresh.nickname}"
         else "已关注 ${fresh.nickname}，但后台检测已关闭，不会自动提醒"
         // 命中配置就排队弹一句，落款用接口返回的真实昵称
-        EasterEggs.find(fresh.platformId, fresh.anchorId, fresh.displayId)?.let { hit ->
+        EasterEggs.find(fresh.platformId, fresh.anchorId, fresh.displayId, fresh.nickname)?.let { hit ->
             _egg.value = hit.copy(nickname = fresh.nickname)
         }
         // 监控关闭时上面没走 refresh，这里补一次让桌面小组件仍跟上（读库已是最新）
